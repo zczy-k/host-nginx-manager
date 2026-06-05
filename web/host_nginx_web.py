@@ -209,6 +209,7 @@ function render(){
     const domain = s.domain || '(默认站点)';
     const actionDomain = String(s.managed_domain || domain).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const actionSource = String(s.source || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const actionTarget = String(s.upstream || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const names = Array.isArray(s.names) && s.names.length ? s.names.join(', ') : domain;
     const listen = Array.isArray(s.listen) && s.listen.length ? s.listen.join(', ') : '-';
     const target = s.upstream || s.root || '-';
@@ -216,9 +217,9 @@ function render(){
     const https = s.https ? '<span class="tag ok">HTTPS</span>' : '<span class="tag warn">HTTP</span>';
     let actions = '<span class="muted">只读</span>';
     if (s.managed && !s.imported) {
-      actions = `<button class="btn small" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`;
+      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`;
     } else if (s.imported) {
-      actions = '<span class="muted">已接管</span>';
+      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><span class="muted">原配置</span>`;
     } else if (s.importable) {
       actions = `<button class="btn small primary" onclick="importSite('${actionDomain}', '${actionSource}')">导入/接管</button>`;
     } else if (s.readonly_reason) {
@@ -230,6 +231,7 @@ function render(){
 }
 async function action(path, body){ $('#output').textContent='执行中...'; const data = await api(path,{method:'POST',body:JSON.stringify(body||{})}); $('#output').textContent = data.output || '完成'; showMsg(data.message || '操作完成','ok'); await load(); }
 async function enableSsl(domain){ const email = prompt('证书邮箱，可留空'); await action('/api/sites/enable-ssl',{domain,email:email||''}); }
+async function editSite(domain, currentTarget){ const target = prompt('新的后端地址，例如 127.0.0.1:3002 或 http://127.0.0.1:3002', currentTarget || ''); if(target) await action('/api/sites/update',{domain,target}); }
 async function disableSsl(domain){ if(confirm('确认关闭 HTTPS？')) await action('/api/sites/disable-ssl',{domain}); }
 async function removeSite(domain){ if(confirm('确认删除站点？')) await action('/api/sites/remove',{domain, delete_cert:false}); }
 async function importSite(domain, source){ if(confirm('确认导入这个已有反向代理站点？导入不会删除原 nginx 配置。')) await action('/api/sites/import',{domain, source}); }
@@ -278,6 +280,15 @@ def split_proxy_upstream(upstream: str) -> tuple[str, str]:
     if not match:
         return "", ""
     return match.group(1), match.group(2)
+
+
+def parse_edit_target(target: str) -> tuple[str, str]:
+    target = target.strip()
+    if target.startswith(("http://", "https://")):
+        return split_proxy_upstream(target)
+    if re.match(r"^[^/:]+:\d+$", target):
+        return "http", target
+    return "", ""
 
 
 def parse_server_block(block: list[str], source: str, managed_by_domain: dict[str, dict[str, str]]) -> dict[str, object]:
@@ -469,12 +480,117 @@ def import_existing_site(domain: str, source: str) -> dict[str, object]:
             "WEBSOCKET=1",
             "BACKEND_INSECURE=0",
             "IMPORTED=1",
+            f"IMPORTED_SOURCE={source}",
             "",
         ]),
         encoding="utf-8",
     )
     os.chmod(state_path, 0o600)
     return {"code": 0, "output": f"已导入：{domain} -> {upstream_scheme}://{upstream_target}"}
+
+
+def find_imported_server_block(lines: list[str], domain: str) -> tuple[int, int]:
+    block_start = -1
+    depth = 0
+    block: list[str] = []
+    for index, line in enumerate(lines):
+        if depth == 0 and re.match(r"^\s*server\s*\{", line):
+            block_start = index
+            block = [line]
+            depth = line.count("{") - line.count("}")
+            continue
+        if depth > 0:
+            block.append(line)
+            depth += line.count("{") - line.count("}")
+            if depth == 0:
+                names = []
+                proxy_passes = []
+                for raw in block:
+                    stripped = raw.split("#", 1)[0].strip()
+                    name_match = re.match(r"^server_name\s+(.+?);", stripped)
+                    if name_match:
+                        names.extend(split_directive_values(name_match.group(1)))
+                    proxy_match = re.match(r"^proxy_pass\s+(.+?);", stripped)
+                    if proxy_match:
+                        proxy_passes.append(proxy_match.group(1).strip())
+                if domain in names and len(proxy_passes) == 1 and split_proxy_upstream(proxy_passes[0])[0]:
+                    return block_start, index
+                block = []
+                block_start = -1
+    return -1, -1
+
+
+def update_imported_site(domain: str, target: str) -> dict[str, object]:
+    domain = domain.strip().lower()
+    scheme, upstream = parse_edit_target(target)
+    if not DOMAIN_RE.match(domain) or not scheme or not upstream:
+        return {"code": 2, "output": "域名或后端地址无效"}
+
+    state_path = STATE_DIR / f"{domain}.env"
+    state = parse_state_file(state_path)
+    if state.get("IMPORTED") != "1":
+        return {"code": 3, "output": "该站点不是导入站点"}
+
+    source = state.get("IMPORTED_SOURCE", "")
+    if not source:
+        server = next((item for item in list_nginx_servers() if item.get("domain") == domain), None)
+        source = str(server.get("source", "")) if server else ""
+    source_path = pathlib.Path(source)
+    if not source_path.is_file() or not str(source_path).startswith("/etc/nginx/"):
+        return {"code": 4, "output": "找不到可编辑的原始 nginx 配置文件"}
+
+    lines = source_path.read_text(encoding="utf-8").splitlines()
+    start, end = find_imported_server_block(lines, domain)
+    if start < 0:
+        return {"code": 5, "output": "未能在原配置里定位到可安全编辑的反向代理块"}
+
+    changed = False
+    for index in range(start, end + 1):
+        match = re.match(r"^(\s*)proxy_pass\s+.+?;(\s*)$", lines[index])
+        if match:
+            lines[index] = f"{match.group(1)}proxy_pass {scheme}://{upstream};{match.group(2)}"
+            changed = True
+            break
+    if not changed:
+        return {"code": 6, "output": "未找到 proxy_pass，无法编辑"}
+
+    backup_path = source_path.with_name(f"{source_path.name}.bak-{int(time.time())}")
+    original = source_path.read_text(encoding="utf-8")
+    backup_path.write_text(original, encoding="utf-8")
+    source_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    test = run_cmd(["nginx", "-t"], timeout=20)
+    if test["code"] != 0:
+        source_path.write_text(original, encoding="utf-8")
+        return {"code": 7, "output": f"nginx 配置校验失败，已回滚。\n{test['output']}"}
+    reload_result = run_cmd(["systemctl", "reload", "nginx"], timeout=20)
+    if reload_result["code"] != 0:
+        reload_result = run_cmd(["nginx", "-s", "reload"], timeout=20)
+
+    state["UPSTREAM"] = upstream
+    state["UPSTREAM_SCHEME"] = scheme
+    state["IMPORTED_SOURCE"] = str(source_path)
+    state_path.write_text(
+        "\n".join([
+            f"DOMAIN={domain}",
+            f"UPSTREAM={state.get('UPSTREAM', upstream)}",
+            f"UPSTREAM_SCHEME={state.get('UPSTREAM_SCHEME', scheme)}",
+            f"ENABLE_SSL={state.get('ENABLE_SSL', '0')}",
+            f"CERTBOT_EMAIL={state.get('CERTBOT_EMAIL', '')}",
+            f"CLIENT_MAX_BODY_SIZE={state.get('CLIENT_MAX_BODY_SIZE', '64m')}",
+            f"PROXY_READ_TIMEOUT={state.get('PROXY_READ_TIMEOUT', '300s')}",
+            f"PROXY_SEND_TIMEOUT={state.get('PROXY_SEND_TIMEOUT', '300s')}",
+            f"WEBSOCKET={state.get('WEBSOCKET', '1')}",
+            f"BACKEND_INSECURE={state.get('BACKEND_INSECURE', '0')}",
+            "IMPORTED=1",
+            f"IMPORTED_SOURCE={source_path}",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    os.chmod(state_path, 0o600)
+    output = f"已更新原 nginx 配置：{domain} -> {scheme}://{upstream}\n备份：{backup_path}\n{reload_result['output']}".strip()
+    return {"code": reload_result["code"], "output": output}
 
 
 def run_cmd(args: list[str], timeout: int = 90) -> dict[str, object]:
@@ -614,6 +730,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sites/import":
             result = import_existing_site(domain, str(data.get("source", "")).strip())
             self.send_json({"message": "站点已导入", **result}, 200 if result["code"] == 0 else 400)
+            return
+
+        if path == "/api/sites/update":
+            scheme, upstream = parse_edit_target(str(data.get("target", "")))
+            if not scheme or not upstream:
+                self.send_json({"error": "后端地址必须是 HOST:PORT 或 http(s)://HOST:PORT"}, 400)
+                return
+            state = parse_state_file(STATE_DIR / f"{domain.strip().lower()}.env")
+            if state.get("IMPORTED") == "1":
+                result = update_imported_site(domain, f"{scheme}://{upstream}")
+            else:
+                result = run_cmd([MANAGER_BIN, "update", domain, upstream, "--upstream-scheme", scheme], timeout=120)
+            self.send_json({"message": "站点已更新", **result}, 200 if result["code"] == 0 else 500)
             return
 
         if path == "/api/sites/add":

@@ -46,6 +46,7 @@ $APP_LABEL v$SCRIPT_VERSION
 
 用法:
   host-nginx-manager.sh add DOMAIN UPSTREAM [选项]
+  host-nginx-manager.sh update DOMAIN UPSTREAM [选项]
   host-nginx-manager.sh enable-ssl DOMAIN [--email EMAIL]
   host-nginx-manager.sh disable-ssl DOMAIN
   host-nginx-manager.sh remove DOMAIN [--yes] [--delete-cert]
@@ -73,6 +74,7 @@ $APP_LABEL v$SCRIPT_VERSION
 
 示例:
   host-nginx-manager.sh add api.example.com 127.0.0.1:3001 --email you@example.com
+  host-nginx-manager.sh update api.example.com 127.0.0.1:3002 --upstream-scheme http
   host-nginx-manager.sh add metapi.cni.de5.net 127.0.0.1:3001 --upstream-scheme http --no-ssl
   host-nginx-manager.sh enable-ssl metapi.cni.de5.net --email you@example.com
   host-nginx-manager.sh remove api.example.com --delete-cert --yes
@@ -396,6 +398,23 @@ cmd_add() {
     write_summary
 }
 
+cmd_update() {
+    DOMAIN="$(normalize_domain "${1:-}")"
+    local new_upstream="${2:-}"
+    shift 2 || true
+
+    validate_domain "$DOMAIN" || die "无效域名：$DOMAIN"
+    validate_upstream "$new_upstream" || die "UPSTREAM 必须是 HOST:PORT 格式，例如 127.0.0.1:3001"
+    load_state "$DOMAIN"
+    [[ "${IMPORTED:-0}" != "1" ]] || die "该站点是从已有 nginx 配置导入的记录，尚未迁移为工具配置，不能直接编辑"
+
+    UPSTREAM="$new_upstream"
+    parse_add_options "$@"
+    save_state
+    apply_site || die "更新站点配置失败"
+    write_summary
+}
+
 write_summary() {
     section "站点已就绪"
     printf '域名         : %s\n' "$DOMAIN"
@@ -553,6 +572,10 @@ main() {
         add)
             [[ $# -ge 2 ]] || die "用法：add DOMAIN UPSTREAM [选项]"
             cmd_add "$@"
+            ;;
+        update)
+            [[ $# -ge 2 ]] || die "用法：update DOMAIN UPSTREAM [选项]"
+            cmd_update "$@"
             ;;
         enable-ssl)
             [[ $# -ge 1 ]] || die "用法：enable-ssl DOMAIN [--email EMAIL]"
