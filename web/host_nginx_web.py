@@ -9,6 +9,7 @@ import http.cookies
 import json
 import os
 import pathlib
+import re
 import secrets
 import subprocess
 import time
@@ -151,7 +152,7 @@ APP_HTML = r'''<!doctype html>
     <section id="dashboard" class="view active">
       <div class="grid stats">
         <div class="panel"><div class="stat-label">nginx</div><div id="nginxStatus" class="stat-value">-</div></div>
-        <div class="panel"><div class="stat-label">受管站点</div><div id="siteCount" class="stat-value">-</div></div>
+        <div class="panel"><div class="stat-label">Nginx 站点</div><div id="siteCount" class="stat-value">-</div></div>
         <div class="panel"><div class="stat-label">监听地址</div><div id="bindInfo" class="stat-value">-</div></div>
         <div class="panel"><div class="stat-label">管理脚本</div><div id="managerInfo" class="stat-value">-</div></div>
       </div>
@@ -159,8 +160,8 @@ APP_HTML = r'''<!doctype html>
     </section>
     <section id="sites" class="view">
       <div class="panel">
-        <div class="row"><h2>受管站点</h2><span class="spacer"></span><button class="btn primary" data-jump="create">新增</button></div>
-        <div style="overflow:auto"><table><thead><tr><th>域名</th><th>后端</th><th>HTTPS</th><th>操作</th></tr></thead><tbody id="siteRows"></tbody></table></div>
+        <div class="row"><h2>Nginx 站点</h2><span class="spacer"></span><button class="btn primary" data-jump="create">新增</button></div>
+        <div style="overflow:auto"><table><thead><tr><th>域名</th><th>监听</th><th>类型</th><th>目标/目录</th><th>来源</th><th>操作</th></tr></thead><tbody id="siteRows"></tbody></table></div>
       </div>
     </section>
     <section id="create" class="view">
@@ -198,7 +199,26 @@ function showMsg(text, type='info'){
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 async function api(path, opts={}){ const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); if(res.status===401){ window.location.replace('/login'); throw new Error('未登录'); } const data = await res.json(); if(!res.ok) throw new Error(data.error || '请求失败'); return data; }
 async function load(){ state = await api('/api/status'); render(); }
-function render(){ $('#nginxStatus').innerHTML = `<span class="tag ${state.nginx_active==='active'?'ok':'bad'}">${escapeHtml(state.nginx_active)}</span>`; $('#siteCount').textContent = state.sites.length; $('#bindInfo').textContent = state.bind + ':' + state.port; $('#managerInfo').textContent = state.manager_exists ? '已安装' : '缺失'; const rows = state.sites.map(s => `<tr><td><strong>${escapeHtml(s.DOMAIN)}</strong></td><td>${escapeHtml(s.UPSTREAM_SCHEME)}://${escapeHtml(s.UPSTREAM)}</td><td><span class="tag ${s.ENABLE_SSL==='1'?'ok':'warn'}">${s.ENABLE_SSL==='1'?'HTTPS':'HTTP'}</span></td><td class="row"><button class="btn small" onclick="enableSsl('${escapeHtml(s.DOMAIN)}')">启用HTTPS</button><button class="btn small" onclick="disableSsl('${escapeHtml(s.DOMAIN)}')">关闭HTTPS</button><button class="btn small danger" onclick="removeSite('${escapeHtml(s.DOMAIN)}')">删除</button></td></tr>`).join(''); $('#siteRows').innerHTML = rows || '<tr><td colspan="4" class="muted">暂无受管站点</td></tr>'; }
+function render(){
+  $('#nginxStatus').innerHTML = `<span class="tag ${state.nginx_active==='active'?'ok':'bad'}">${escapeHtml(state.nginx_active)}</span>`;
+  $('#siteCount').textContent = state.sites.length;
+  $('#bindInfo').textContent = state.bind + ':' + state.port;
+  $('#managerInfo').textContent = state.manager_exists ? '已安装' : '缺失';
+  const rows = state.sites.map(s => {
+    const domain = s.domain || '(默认站点)';
+    const actionDomain = String(s.managed_domain || domain).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const names = Array.isArray(s.names) && s.names.length ? s.names.join(', ') : domain;
+    const listen = Array.isArray(s.listen) && s.listen.length ? s.listen.join(', ') : '-';
+    const target = s.upstream || s.root || '-';
+    const owner = s.managed ? '<span class="tag ok">受管</span>' : '<span class="tag">已有</span>';
+    const https = s.https ? '<span class="tag ok">HTTPS</span>' : '<span class="tag warn">HTTP</span>';
+    const actions = s.managed
+      ? `<button class="btn small" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`
+      : '<span class="muted">只读</span>';
+    return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${escapeHtml(listen)}</td><td>${owner} ${https}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div></td><td>${escapeHtml(target)}</td><td>${escapeHtml(s.source || '-')}</td><td class="row">${actions}</td></tr>`;
+  }).join('');
+  $('#siteRows').innerHTML = rows || '<tr><td colspan="6" class="muted">当前 nginx 配置里没有发现 server 站点</td></tr>';
+}
 async function action(path, body){ $('#output').textContent='执行中...'; const data = await api(path,{method:'POST',body:JSON.stringify(body||{})}); $('#output').textContent = data.output || '完成'; showMsg(data.message || '操作完成','ok'); await load(); }
 async function enableSsl(domain){ const email = prompt('证书邮箱，可留空'); await action('/api/sites/enable-ssl',{domain,email:email||''}); }
 async function disableSsl(domain){ if(confirm('确认关闭 HTTPS？')) await action('/api/sites/disable-ssl',{domain}); }
@@ -232,11 +252,133 @@ def parse_state_file(path: pathlib.Path) -> dict[str, str]:
     return data
 
 
-def list_sites() -> list[dict[str, str]]:
+def list_managed_sites() -> list[dict[str, str]]:
     if not STATE_DIR.exists():
         return []
     sites = [parse_state_file(p) for p in sorted(STATE_DIR.glob("*.env"))]
     return [s for s in sites if s.get("DOMAIN")]
+
+
+def split_directive_values(value: str) -> list[str]:
+    return [part for part in value.strip().split() if part and part != "_"]
+
+
+def parse_server_block(block: list[str], source: str, managed_by_domain: dict[str, dict[str, str]]) -> dict[str, object]:
+    names: list[str] = []
+    listens: list[str] = []
+    proxy_passes: list[str] = []
+    roots: list[str] = []
+    has_ssl_cert = False
+
+    for raw in block:
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        match = re.match(r"^server_name\s+(.+?);", line)
+        if match:
+            names.extend(split_directive_values(match.group(1)))
+            continue
+        match = re.match(r"^listen\s+(.+?);", line)
+        if match:
+            listens.append(match.group(1).strip())
+            continue
+        match = re.match(r"^proxy_pass\s+(.+?);", line)
+        if match:
+            proxy_passes.append(match.group(1).strip())
+            continue
+        match = re.match(r"^root\s+(.+?);", line)
+        if match:
+            roots.append(match.group(1).strip())
+            continue
+        if line.startswith("ssl_certificate "):
+            has_ssl_cert = True
+
+    managed_domain = next((name for name in names if name in managed_by_domain), "")
+    managed = bool(managed_domain or re.search(r"/vpspm-[^/]+\.conf$", source))
+    display_name = managed_domain or (names[0] if names else "(默认站点)")
+    upstream = proxy_passes[0] if proxy_passes else ""
+    https = has_ssl_cert or any("ssl" in item or ":443" in item or item.startswith("443") for item in listens)
+
+    if proxy_passes:
+        kind = "反向代理"
+    elif roots:
+        kind = "静态站点"
+    else:
+        kind = "Nginx 服务"
+
+    return {
+        "domain": display_name,
+        "names": names,
+        "listen": listens,
+        "upstream": upstream,
+        "root": roots[0] if roots else "",
+        "kind": kind,
+        "https": https,
+        "managed": managed,
+        "source": source,
+        "managed_domain": managed_domain,
+    }
+
+
+def list_nginx_servers() -> list[dict[str, object]]:
+    managed_sites = list_managed_sites()
+    managed_by_domain = {str(site.get("DOMAIN", "")): site for site in managed_sites}
+    dump = run_cmd(["nginx", "-T"], timeout=20)
+    if dump["code"] != 0:
+        return [{
+            "domain": site.get("DOMAIN", ""),
+            "names": [site.get("DOMAIN", "")],
+            "listen": [],
+            "upstream": f"{site.get('UPSTREAM_SCHEME', 'http')}://{site.get('UPSTREAM', '')}",
+            "root": "",
+            "kind": "反向代理",
+            "https": site.get("ENABLE_SSL") == "1",
+            "managed": True,
+            "source": "状态文件，nginx -T 读取失败",
+            "managed_domain": site.get("DOMAIN", ""),
+        } for site in managed_sites]
+
+    servers: list[dict[str, object]] = []
+    current_file = "nginx -T"
+    block: list[str] = []
+    depth = 0
+
+    for line in str(dump["output"]).splitlines():
+        if line.startswith("# configuration file "):
+            current_file = line[len("# configuration file "):].rstrip(":")
+            continue
+        if depth == 0 and re.match(r"^\s*server\s*\{", line):
+            block = [line]
+            depth = line.count("{") - line.count("}")
+            if depth == 0:
+                servers.append(parse_server_block(block, current_file, managed_by_domain))
+                block = []
+            continue
+        if depth > 0:
+            block.append(line)
+            depth += line.count("{") - line.count("}")
+            if depth == 0:
+                servers.append(parse_server_block(block, current_file, managed_by_domain))
+                block = []
+
+    seen_managed = {str(server.get("managed_domain")) for server in servers if server.get("managed_domain")}
+    for site in managed_sites:
+        domain = site.get("DOMAIN", "")
+        if domain and domain not in seen_managed:
+            servers.append({
+                "domain": domain,
+                "names": [domain],
+                "listen": [],
+                "upstream": f"{site.get('UPSTREAM_SCHEME', 'http')}://{site.get('UPSTREAM', '')}",
+                "root": "",
+                "kind": "反向代理",
+                "https": site.get("ENABLE_SSL") == "1",
+                "managed": True,
+                "source": "状态文件，当前 nginx 配置未发现",
+                "managed_domain": domain,
+            })
+
+    return servers
 
 
 def run_cmd(args: list[str], timeout: int = 90) -> dict[str, object]:
@@ -327,7 +469,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             active = run_cmd(["systemctl", "is-active", "nginx"], timeout=10)
             self.send_json({
-                "sites": list_sites(),
+                "sites": list_nginx_servers(),
                 "nginx_active": (active["output"] or "unknown"),
                 "manager_exists": pathlib.Path(MANAGER_BIN).exists(),
                 "bind": BIND,
