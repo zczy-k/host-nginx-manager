@@ -27,12 +27,7 @@ SECRET = os.environ.get("HNG_WEB_SECRET", "") or secrets.token_urlsafe(32)
 COOKIE_NAME = "hng_session"
 SESSION_TTL = 12 * 60 * 60
 
-INDEX_HTML = r'''<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Host Nginx Manager</title>
+PAGE_CSS = r'''
   <style>
     :root { color-scheme: light; --bg:#f6f7f9; --panel:#fff; --line:#d9dee6; --text:#17202a; --muted:#667085; --blue:#1b64d8; --blue2:#eaf1ff; --red:#c62828; --green:#157347; --amber:#9a6700; --shadow:0 1px 2px rgba(16,24,40,.06); }
     * { box-sizing: border-box; }
@@ -80,22 +75,64 @@ INDEX_HTML = r'''<!doctype html>
     .notice { border-left:3px solid var(--blue); background:var(--blue2); padding:10px 12px; border-radius:6px; color:#173b70; }
     .login { min-height:100vh; display:grid; place-items:center; padding:24px; }
     .login .panel { width:min(420px,100%); }
+    .login-message { margin:12px 0; }
     @media (max-width:860px) { .shell { grid-template-columns:1fr; } aside { position:sticky; top:0; z-index:5; } .nav { display:flex; overflow:auto; } .nav button { white-space:nowrap; } .stats,.form-grid { grid-template-columns:1fr; } main { padding:16px; } }
   </style>
-</head>
+'''
+
+LOGIN_HTML = r'''<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 - Host Nginx Manager</title>
+''' + PAGE_CSS + r'''</head>
 <body>
-<div id="login" class="login" hidden>
+<div class="login">
   <section class="panel">
     <h1>Host Nginx Manager</h1>
     <p class="muted">输入安装时生成的管理密码。</p>
-    <section id="loginMessage"></section>
+    <section id="loginMessage" class="login-message"></section>
     <form id="loginForm">
       <label>管理密码<input id="password" type="password" autocomplete="current-password" required></label>
-      <button class="btn primary" type="submit">登录</button>
+      <button id="loginBtn" class="btn primary" type="submit">登录</button>
     </form>
   </section>
 </div>
-<div id="app" class="shell" hidden>
+<script>
+const $ = (s) => document.querySelector(s);
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function showMsg(text, type='info'){ $('#loginMessage').innerHTML = text ? `<div class="panel"><span class="tag ${type}">${type}</span> ${escapeHtml(text)}</div>` : ''; }
+async function api(path, opts={}){ const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); const data = await res.json(); if(!res.ok) throw new Error(data.error || '请求失败'); return data; }
+$('#loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = $('#loginBtn');
+  btn.disabled = true;
+  btn.textContent = '登录中...';
+  showMsg('');
+  try {
+    await api('/api/login',{method:'POST',body:JSON.stringify({password:$('#password').value})});
+    window.location.replace('/');
+  } catch(err) {
+    showMsg(err.message,'bad');
+    btn.disabled = false;
+    btn.textContent = '登录';
+  }
+});
+</script>
+</body>
+</html>'''
+
+APP_HTML = r'''<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Host Nginx Manager</title>
+''' + PAGE_CSS + r'''
+</head>
+<body>
+<div class="shell">
   <aside>
     <div class="brand">Host Nginx Manager</div>
     <nav class="nav">
@@ -156,29 +193,23 @@ INDEX_HTML = r'''<!doctype html>
 let state = null;
 const $ = (s) => document.querySelector(s);
 function showMsg(text, type='info'){
-  const target = !$('#login').hidden && $('#loginMessage') ? $('#loginMessage') : $('#message');
-  target.innerHTML = text ? `<div class="panel"><span class="tag ${type}">${type}</span> ${escapeHtml(text)}</div>` : '';
-  const other = target.id === 'loginMessage' ? $('#message') : $('#loginMessage');
-  if (other) other.innerHTML = '';
+  $('#message').innerHTML = text ? `<div class="panel"><span class="tag ${type}">${type}</span> ${escapeHtml(text)}</div>` : '';
 }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-async function api(path, opts={}){ const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); if(res.status===401){ showLogin(); throw new Error('未登录'); } const data = await res.json(); if(!res.ok) throw new Error(data.error || '请求失败'); return data; }
-function showLogin(){ $('#login').hidden=false; $('#app').hidden=true; }
-function showApp(){ $('#login').hidden=true; $('#app').hidden=false; }
-async function load(){ state = await api('/api/status'); showApp(); render(); }
+async function api(path, opts={}){ const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); if(res.status===401){ window.location.replace('/login'); throw new Error('未登录'); } const data = await res.json(); if(!res.ok) throw new Error(data.error || '请求失败'); return data; }
+async function load(){ state = await api('/api/status'); render(); }
 function render(){ $('#nginxStatus').innerHTML = `<span class="tag ${state.nginx_active==='active'?'ok':'bad'}">${escapeHtml(state.nginx_active)}</span>`; $('#siteCount').textContent = state.sites.length; $('#bindInfo').textContent = state.bind + ':' + state.port; $('#managerInfo').textContent = state.manager_exists ? '已安装' : '缺失'; const rows = state.sites.map(s => `<tr><td><strong>${escapeHtml(s.DOMAIN)}</strong></td><td>${escapeHtml(s.UPSTREAM_SCHEME)}://${escapeHtml(s.UPSTREAM)}</td><td><span class="tag ${s.ENABLE_SSL==='1'?'ok':'warn'}">${s.ENABLE_SSL==='1'?'HTTPS':'HTTP'}</span></td><td class="row"><button class="btn small" onclick="enableSsl('${escapeHtml(s.DOMAIN)}')">启用HTTPS</button><button class="btn small" onclick="disableSsl('${escapeHtml(s.DOMAIN)}')">关闭HTTPS</button><button class="btn small danger" onclick="removeSite('${escapeHtml(s.DOMAIN)}')">删除</button></td></tr>`).join(''); $('#siteRows').innerHTML = rows || '<tr><td colspan="4" class="muted">暂无受管站点</td></tr>'; }
 async function action(path, body){ $('#output').textContent='执行中...'; const data = await api(path,{method:'POST',body:JSON.stringify(body||{})}); $('#output').textContent = data.output || '完成'; showMsg(data.message || '操作完成','ok'); await load(); }
 async function enableSsl(domain){ const email = prompt('证书邮箱，可留空'); await action('/api/sites/enable-ssl',{domain,email:email||''}); }
 async function disableSsl(domain){ if(confirm('确认关闭 HTTPS？')) await action('/api/sites/disable-ssl',{domain}); }
 async function removeSite(domain){ if(confirm('确认删除站点？')) await action('/api/sites/remove',{domain, delete_cert:false}); }
-$('#loginForm').addEventListener('submit', async e => { e.preventDefault(); try { await api('/api/login',{method:'POST',body:JSON.stringify({password:$('#password').value})}); await load(); } catch(err){ showMsg(err.message,'bad'); } });
-$('#logoutBtn').onclick = async()=>{ await api('/api/logout',{method:'POST',body:'{}'}); showLogin(); };
+$('#logoutBtn').onclick = async()=>{ await api('/api/logout',{method:'POST',body:'{}'}); window.location.replace('/login'); };
 $('#refreshBtn').onclick = ()=>load().catch(e=>showMsg(e.message,'bad'));
 $('#testBtn').onclick = ()=>action('/api/nginx/test',{}).catch(e=>showMsg(e.message,'bad'));
 $('#reloadBtn').onclick = ()=>action('/api/nginx/reload',{}).catch(e=>showMsg(e.message,'bad'));
 $('#createForm').addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(e.target); const body = {domain:f.get('domain'), upstream:f.get('upstream'), scheme:f.get('scheme'), email:f.get('email'), ssl:f.has('ssl'), body:f.get('body'), readTimeout:f.get('readTimeout'), backendInsecure:f.has('backendInsecure')}; try { await action('/api/sites/add', body); e.target.reset(); } catch(err){ showMsg(err.message,'bad'); $('#output').textContent = err.message; } });
 document.querySelectorAll('.nav button,[data-jump]').forEach(b => b.onclick = () => { const v=b.dataset.view||b.dataset.jump; document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===v)); document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.view===v)); $('#title').textContent = ({dashboard:'概览',sites:'站点',create:'新增反代',tools:'维护'})[v] || '概览'; });
-load().catch(()=>showLogin());
+load().catch(e=>showMsg(e.message,'bad'));
 </script>
 </body>
 </html>'''
@@ -238,6 +269,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_html(self, html: str) -> None:
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def redirect(self, location: str) -> None:
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
     def read_json(self) -> dict[str, object]:
         length = int(self.headers.get("Content-Length", "0") or 0)
         raw = self.rfile.read(length) if length else b"{}"
@@ -264,14 +310,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path == "/login":
+            if self.authenticated():
+                self.redirect("/")
+                return
+            self.send_html(LOGIN_HTML)
+            return
         if path == "/":
-            body = INDEX_HTML.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            if not self.authenticated():
+                self.redirect("/login")
+                return
+            self.send_html(APP_HTML)
             return
         if path == "/api/status":
             if not self.require_auth():
