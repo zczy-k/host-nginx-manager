@@ -27,6 +27,7 @@ PASSWORD = os.environ.get("HNG_WEB_PASSWORD", "")
 SECRET = os.environ.get("HNG_WEB_SECRET", "") or secrets.token_urlsafe(32)
 COOKIE_NAME = "hng_session"
 SESSION_TTL = 12 * 60 * 60
+DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z0-9.-]+$")
 
 PAGE_CSS = r'''
   <style>
@@ -197,7 +198,7 @@ function showMsg(text, type='info'){
   $('#message').innerHTML = text ? `<div class="panel"><span class="tag ${type}">${type}</span> ${escapeHtml(text)}</div>` : '';
 }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-async function api(path, opts={}){ const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); if(res.status===401){ window.location.replace('/login'); throw new Error('未登录'); } const data = await res.json(); if(!res.ok) throw new Error(data.error || '请求失败'); return data; }
+async function api(path, opts={}){ const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); if(res.status===401){ window.location.replace('/login'); throw new Error('未登录'); } const data = await res.json(); if(!res.ok) throw new Error(data.error || data.output || '请求失败'); return data; }
 async function load(){ state = await api('/api/status'); render(); }
 function render(){
   $('#nginxStatus').innerHTML = `<span class="tag ${state.nginx_active==='active'?'ok':'bad'}">${escapeHtml(state.nginx_active)}</span>`;
@@ -207,14 +208,22 @@ function render(){
   const rows = state.sites.map(s => {
     const domain = s.domain || '(默认站点)';
     const actionDomain = String(s.managed_domain || domain).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const actionSource = String(s.source || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const names = Array.isArray(s.names) && s.names.length ? s.names.join(', ') : domain;
     const listen = Array.isArray(s.listen) && s.listen.length ? s.listen.join(', ') : '-';
     const target = s.upstream || s.root || '-';
-    const owner = s.managed ? '<span class="tag ok">受管</span>' : '<span class="tag">已有</span>';
+    const owner = s.managed ? `<span class="tag ok">${s.imported ? '已接管' : '受管'}</span>` : '<span class="tag">已有</span>';
     const https = s.https ? '<span class="tag ok">HTTPS</span>' : '<span class="tag warn">HTTP</span>';
-    const actions = s.managed
-      ? `<button class="btn small" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`
-      : '<span class="muted">只读</span>';
+    let actions = '<span class="muted">只读</span>';
+    if (s.managed && !s.imported) {
+      actions = `<button class="btn small" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`;
+    } else if (s.imported) {
+      actions = '<span class="muted">已接管</span>';
+    } else if (s.importable) {
+      actions = `<button class="btn small primary" onclick="importSite('${actionDomain}', '${actionSource}')">导入/接管</button>`;
+    } else if (s.readonly_reason) {
+      actions = `<span class="muted">${escapeHtml(s.readonly_reason)}</span>`;
+    }
     return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${escapeHtml(listen)}</td><td>${owner} ${https}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div></td><td>${escapeHtml(target)}</td><td>${escapeHtml(s.source || '-')}</td><td class="row">${actions}</td></tr>`;
   }).join('');
   $('#siteRows').innerHTML = rows || '<tr><td colspan="6" class="muted">当前 nginx 配置里没有发现 server 站点</td></tr>';
@@ -223,6 +232,7 @@ async function action(path, body){ $('#output').textContent='执行中...'; cons
 async function enableSsl(domain){ const email = prompt('证书邮箱，可留空'); await action('/api/sites/enable-ssl',{domain,email:email||''}); }
 async function disableSsl(domain){ if(confirm('确认关闭 HTTPS？')) await action('/api/sites/disable-ssl',{domain}); }
 async function removeSite(domain){ if(confirm('确认删除站点？')) await action('/api/sites/remove',{domain, delete_cert:false}); }
+async function importSite(domain, source){ if(confirm('确认导入这个已有反向代理站点？导入不会删除原 nginx 配置。')) await action('/api/sites/import',{domain, source}); }
 $('#logoutBtn').onclick = async()=>{ await api('/api/logout',{method:'POST',body:'{}'}); window.location.replace('/login'); };
 $('#refreshBtn').onclick = ()=>load().catch(e=>showMsg(e.message,'bad'));
 $('#testBtn').onclick = ()=>action('/api/nginx/test',{}).catch(e=>showMsg(e.message,'bad'));
@@ -263,6 +273,13 @@ def split_directive_values(value: str) -> list[str]:
     return [part for part in value.strip().split() if part and part != "_"]
 
 
+def split_proxy_upstream(upstream: str) -> tuple[str, str]:
+    match = re.match(r"^(https?)://([^/]+)$", upstream.strip())
+    if not match:
+        return "", ""
+    return match.group(1), match.group(2)
+
+
 def parse_server_block(block: list[str], source: str, managed_by_domain: dict[str, dict[str, str]]) -> dict[str, object]:
     names: list[str] = []
     listens: list[str] = []
@@ -294,10 +311,13 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
             has_ssl_cert = True
 
     managed_domain = next((name for name in names if name in managed_by_domain), "")
+    managed_state = managed_by_domain.get(managed_domain, {}) if managed_domain else {}
     managed = bool(managed_domain or re.search(r"/vpspm-[^/]+\.conf$", source))
     display_name = managed_domain or (names[0] if names else "(默认站点)")
     upstream = proxy_passes[0] if proxy_passes else ""
     https = has_ssl_cert or any("ssl" in item or ":443" in item or item.startswith("443") for item in listens)
+    import_domain = next((name for name in names if DOMAIN_RE.match(name)), "")
+    upstream_scheme, upstream_target = split_proxy_upstream(upstream)
 
     if proxy_passes:
         kind = "反向代理"
@@ -305,6 +325,27 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
         kind = "静态站点"
     else:
         kind = "Nginx 服务"
+
+    importable = bool(
+        not managed
+        and kind == "反向代理"
+        and import_domain
+        and upstream_scheme
+        and upstream_target
+        and "$" not in upstream
+    )
+    if importable:
+        readonly_reason = ""
+    elif managed:
+        readonly_reason = ""
+    elif kind != "反向代理":
+        readonly_reason = "特殊配置"
+    elif not import_domain:
+        readonly_reason = "特殊配置"
+    elif "$" in upstream:
+        readonly_reason = "变量代理"
+    else:
+        readonly_reason = "只读"
 
     return {
         "domain": display_name,
@@ -315,8 +356,13 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
         "kind": kind,
         "https": https,
         "managed": managed,
+        "imported": managed_state.get("IMPORTED") == "1",
+        "importable": importable,
+        "readonly_reason": readonly_reason,
         "source": source,
         "managed_domain": managed_domain,
+        "upstream_scheme": upstream_scheme,
+        "upstream_target": upstream_target,
     }
 
 
@@ -334,8 +380,13 @@ def list_nginx_servers() -> list[dict[str, object]]:
             "kind": "反向代理",
             "https": site.get("ENABLE_SSL") == "1",
             "managed": True,
+            "imported": site.get("IMPORTED") == "1",
+            "importable": False,
+            "readonly_reason": "",
             "source": "状态文件，nginx -T 读取失败",
             "managed_domain": site.get("DOMAIN", ""),
+            "upstream_scheme": site.get("UPSTREAM_SCHEME", "http"),
+            "upstream_target": site.get("UPSTREAM", ""),
         } for site in managed_sites]
 
     servers: list[dict[str, object]] = []
@@ -374,11 +425,56 @@ def list_nginx_servers() -> list[dict[str, object]]:
                 "kind": "反向代理",
                 "https": site.get("ENABLE_SSL") == "1",
                 "managed": True,
+                "imported": site.get("IMPORTED") == "1",
+                "importable": False,
+                "readonly_reason": "",
                 "source": "状态文件，当前 nginx 配置未发现",
                 "managed_domain": domain,
+                "upstream_scheme": site.get("UPSTREAM_SCHEME", "http"),
+                "upstream_target": site.get("UPSTREAM", ""),
             })
 
     return servers
+
+
+def import_existing_site(domain: str, source: str) -> dict[str, object]:
+    domain = domain.strip().lower()
+    if not DOMAIN_RE.match(domain):
+        return {"code": 2, "output": "域名无效，不能导入"}
+
+    servers = list_nginx_servers()
+    server = next((item for item in servers if item.get("domain") == domain and item.get("source") == source), None)
+    if not server:
+        return {"code": 3, "output": "未找到对应 nginx 站点，请刷新后重试"}
+    if not server.get("importable"):
+        return {"code": 4, "output": f"该站点属于特殊配置或已受管，不能自动接管：{server.get('readonly_reason') or '只读'}"}
+
+    upstream_scheme = str(server.get("upstream_scheme") or "")
+    upstream_target = str(server.get("upstream_target") or "")
+    if upstream_scheme not in {"http", "https"} or not re.match(r"^[^/:]+:\d+$", upstream_target):
+        return {"code": 5, "output": "只支持导入明确的 http/https HOST:PORT 反向代理"}
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state_path = STATE_DIR / f"{domain}.env"
+    state_path.write_text(
+        "\n".join([
+            f"DOMAIN={domain}",
+            f"UPSTREAM={upstream_target}",
+            f"UPSTREAM_SCHEME={upstream_scheme}",
+            f"ENABLE_SSL={'1' if server.get('https') else '0'}",
+            "CERTBOT_EMAIL=",
+            "CLIENT_MAX_BODY_SIZE=64m",
+            "PROXY_READ_TIMEOUT=300s",
+            "PROXY_SEND_TIMEOUT=300s",
+            "WEBSOCKET=1",
+            "BACKEND_INSECURE=0",
+            "IMPORTED=1",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    os.chmod(state_path, 0o600)
+    return {"code": 0, "output": f"已导入：{domain} -> {upstream_scheme}://{upstream_target}"}
 
 
 def run_cmd(args: list[str], timeout: int = 90) -> dict[str, object]:
@@ -515,6 +611,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         domain = str(data.get("domain", "")).strip()
+        if path == "/api/sites/import":
+            result = import_existing_site(domain, str(data.get("source", "")).strip())
+            self.send_json({"message": "站点已导入", **result}, 200 if result["code"] == 0 else 400)
+            return
+
         if path == "/api/sites/add":
             args = [MANAGER_BIN, "add", domain, str(data.get("upstream", "")).strip(), "--upstream-scheme", str(data.get("scheme", "http"))]
             if not data.get("ssl", True):
