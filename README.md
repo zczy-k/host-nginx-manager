@@ -34,7 +34,7 @@ Host Nginx Manager 是给“已有宿主 nginx，且不再使用 Nginx Proxy Man
 
 ## 安装 Web 管理面板
 
-推荐安装 Web 面板。它默认只监听 `127.0.0.1:8098`，不直接暴露到公网。
+推荐安装 Web 面板。它默认监听 `0.0.0.0:8098`，可通过服务器公网 IP 访问。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/install-web.sh | sudo bash
@@ -44,19 +44,15 @@ curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/inst
 
 - 管理地址
 - 管理密码
-- SSH 隧道命令
+- 公网访问地址
 
-在你的本地电脑执行 SSH 隧道，例如：
-
-```bash
-ssh -L 8098:127.0.0.1:8098 root@你的服务器IP
-```
-
-然后浏览器打开：
+确认云安全组/防火墙放行 `8098/tcp` 后，浏览器打开：
 
 ```text
-http://127.0.0.1:8098
+http://你的服务器IP:8098
 ```
+
+如果你想改回只允许 SSH 隧道访问，可以在安装时设置 `HNG_WEB_BIND=127.0.0.1`。
 
 管理密码保存在 VPS：
 

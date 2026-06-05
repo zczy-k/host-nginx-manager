@@ -14,12 +14,13 @@ import subprocess
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Optional
 from urllib.parse import urlparse
 
 APP_TITLE = "Host Nginx Manager"
 MANAGER_BIN = os.environ.get("HNG_MANAGER_BIN", "/usr/local/sbin/host-nginx-manager")
 STATE_DIR = pathlib.Path(os.environ.get("HNG_STATE_DIR", "/etc/nginx/vps-proxy-manager/sites"))
-BIND = os.environ.get("HNG_WEB_BIND", "127.0.0.1")
+BIND = os.environ.get("HNG_WEB_BIND", "0.0.0.0")
 PORT = int(os.environ.get("HNG_WEB_PORT", "8098"))
 PASSWORD = os.environ.get("HNG_WEB_PASSWORD", "")
 SECRET = os.environ.get("HNG_WEB_SECRET", "") or secrets.token_urlsafe(32)
@@ -220,11 +221,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: object) -> None:
         return
 
-    def send_json(self, data: object, status: int = 200) -> None:
+    def send_json(self, data: object, status: int = 200, headers: Optional[dict[str, str]] = None) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -293,19 +296,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             ts = str(int(time.time()))
             cookie = f"{COOKIE_NAME}={ts}:{sign_session(ts)}; HttpOnly; SameSite=Strict; Path=/"
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Set-Cookie", cookie)
-            self.end_headers()
-            self.wfile.write(b'{"ok":true}')
+            self.send_json({"ok": True}, headers={"Set-Cookie": cookie})
             return
 
         if path == "/api/logout":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Set-Cookie", f"{COOKIE_NAME}=; Max-Age=0; Path=/")
-            self.end_headers()
-            self.wfile.write(b'{"ok":true}')
+            self.send_json({"ok": True}, headers={"Set-Cookie": f"{COOKIE_NAME}=; Max-Age=0; Path=/"})
             return
 
         if not self.require_auth():

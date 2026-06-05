@@ -10,7 +10,7 @@ ENV_FILE="$ENV_DIR/web.env"
 SERVICE_FILE="/etc/systemd/system/host-nginx-manager-web.service"
 MANAGER_BIN="/usr/local/sbin/host-nginx-manager"
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main}"
-BIND_ADDR="${HNG_WEB_BIND:-127.0.0.1}"
+BIND_ADDR="${HNG_WEB_BIND:-0.0.0.0}"
 PORT="${HNG_WEB_PORT:-8098}"
 
 GREEN='\033[0;32m'
@@ -115,9 +115,14 @@ EOF
     log "Host Nginx Manager Web UI 已安装"
     printf '\n管理地址: http://%s:%s\n' "$BIND_ADDR" "$PORT"
     printf '管理密码: %s\n' "$password"
-    printf '\n如果监听在 127.0.0.1，请在本地电脑执行 SSH 隧道：\n'
-    printf 'ssh -L %s:127.0.0.1:%s root@你的服务器IP\n' "$PORT" "$PORT"
-    printf '然后打开: http://127.0.0.1:%s\n' "$PORT"
+    if [[ "$BIND_ADDR" == "127.0.0.1" || "$BIND_ADDR" == "localhost" ]]; then
+        printf '\n当前只监听本机，请在本地电脑执行 SSH 隧道：\n'
+        printf 'ssh -L %s:127.0.0.1:%s root@你的服务器IP\n' "$PORT" "$PORT"
+        printf '然后打开: http://127.0.0.1:%s\n' "$PORT"
+    else
+        printf '\n公网访问地址: http://你的服务器IP:%s\n' "$PORT"
+        warn "Web 面板已监听公网地址，请确认云安全组/防火墙仅向可信 IP 放行 $PORT 端口。"
+    fi
     warn "请妥善保存管理密码。密码保存在 $ENV_FILE"
 }
 
