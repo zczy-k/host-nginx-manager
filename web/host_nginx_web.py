@@ -88,6 +88,7 @@ INDEX_HTML = r'''<!doctype html>
   <section class="panel">
     <h1>Host Nginx Manager</h1>
     <p class="muted">输入安装时生成的管理密码。</p>
+    <section id="loginMessage"></section>
     <form id="loginForm">
       <label>管理密码<input id="password" type="password" autocomplete="current-password" required></label>
       <button class="btn primary" type="submit">登录</button>
@@ -154,7 +155,12 @@ INDEX_HTML = r'''<!doctype html>
 <script>
 let state = null;
 const $ = (s) => document.querySelector(s);
-function showMsg(text, type='info'){ $('#message').innerHTML = text ? `<div class="panel"><span class="tag ${type}">${type}</span> ${escapeHtml(text)}</div>` : ''; }
+function showMsg(text, type='info'){
+  const target = !$('#login').hidden && $('#loginMessage') ? $('#loginMessage') : $('#message');
+  target.innerHTML = text ? `<div class="panel"><span class="tag ${type}">${type}</span> ${escapeHtml(text)}</div>` : '';
+  const other = target.id === 'loginMessage' ? $('#message') : $('#loginMessage');
+  if (other) other.innerHTML = '';
+}
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 async function api(path, opts={}){ const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); if(res.status===401){ showLogin(); throw new Error('未登录'); } const data = await res.json(); if(!res.ok) throw new Error(data.error || '请求失败'); return data; }
 function showLogin(){ $('#login').hidden=false; $('#app').hidden=true; }
