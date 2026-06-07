@@ -145,6 +145,7 @@ APP_HTML = r'''<!doctype html>
     <nav class="nav">
       <button data-view="dashboard" class="active">概览</button>
       <button data-view="sites">站点</button>
+      <button data-view="services">本机服务</button>
       <button data-view="create">新增反代</button>
       <button data-view="tools">维护</button>
     </nav>
@@ -163,6 +164,7 @@ APP_HTML = r'''<!doctype html>
         <div class="panel"><div class="stat-label">管理脚本</div><div id="managerInfo" class="stat-value">-</div></div>
         <div class="panel"><div class="stat-label">后端异常</div><div id="backendBadCount" class="stat-value">-</div></div>
         <div class="panel"><div class="stat-label">证书预警</div><div id="certWarnCount" class="stat-value">-</div></div>
+        <div class="panel"><div class="stat-label">本机服务</div><div id="serviceCount" class="stat-value">-</div></div>
       </div>
       <div class="panel"><h2>当前建议</h2><div class="notice">普通 Web/API 服务可以统一放到不同子域名的 443；Rathole、stream、ssl_preread 仍建议手工维护。</div></div>
     </section>
@@ -170,6 +172,12 @@ APP_HTML = r'''<!doctype html>
       <div class="panel">
         <div class="row"><h2>Nginx 站点</h2><span class="spacer"></span><button class="btn primary" data-jump="create">新增</button></div>
         <div style="overflow:auto"><table><thead><tr><th>域名</th><th>监听</th><th>类型</th><th>目标/目录</th><th>来源</th><th>操作</th></tr></thead><tbody id="siteRows"></tbody></table></div>
+      </div>
+    </section>
+    <section id="services" class="view">
+      <div class="panel">
+        <div class="row"><h2>本机监听服务</h2><span class="spacer"></span><button class="btn primary" data-jump="create">新增反代</button></div>
+        <div style="overflow:auto"><table><thead><tr><th>地址</th><th>端口</th><th>进程</th><th>状态</th><th>建议后端</th><th>操作</th></tr></thead><tbody id="serviceRows"></tbody></table></div>
       </div>
     </section>
     <section id="create" class="view">
@@ -214,6 +222,7 @@ function render(){
   $('#managerInfo').textContent = state.manager_exists ? '已安装' : '缺失';
   $('#backendBadCount').textContent = state.sites.filter(s => s.backend_status === 'bad').length;
   $('#certWarnCount').textContent = state.sites.filter(s => s.cert_status === 'warn' || s.cert_status === 'missing' || s.cert_status === 'error').length;
+  $('#serviceCount').textContent = state.services.length;
   const rows = state.sites.map(s => {
     const domain = s.domain || '(默认站点)';
     const actionDomain = String(s.managed_domain || domain).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -245,6 +254,12 @@ function render(){
     return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${escapeHtml(listen)}</td><td>${owner} ${https} ${backendTag} ${certTag}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div></td><td>${escapeHtml(target)}${s.backend_detail ? `<div class="muted">${escapeHtml(s.backend_detail)}</div>` : ''}</td><td>${escapeHtml(s.source || '-')}${s.cert_info ? `<div class="muted">${escapeHtml(s.cert_info)}</div>` : ''}</td><td class="row">${actions}</td></tr>`;
   }).join('');
   $('#siteRows').innerHTML = rows || '<tr><td colspan="6" class="muted">当前 nginx 配置里没有发现 server 站点</td></tr>';
+  const serviceRows = state.services.map(s => {
+    const target = `${s.host}:${s.port}`;
+    const actionTarget = String(target).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return `<tr><td>${escapeHtml(s.host)}</td><td>${escapeHtml(String(s.port))}</td><td>${escapeHtml(s.process)}</td><td><span class="tag ${s.exposed ? 'warn' : 'ok'}">${s.exposed ? '公网监听' : '本机监听'}</span></td><td>${escapeHtml(target)}</td><td class="row"><button class="btn small primary" onclick="useService('${actionTarget}')">用于反代</button></td></tr>`;
+  }).join('');
+  $('#serviceRows').innerHTML = serviceRows || '<tr><td colspan="6" class="muted">当前没有发现适合反代的本机监听服务</td></tr>';
 }
 async function action(path, body){ $('#output').textContent='执行中...'; const data = await api(path,{method:'POST',body:JSON.stringify(body||{})}); $('#output').textContent = data.output || '完成'; showMsg(data.message || '操作完成','ok'); await load(); }
 async function enableSsl(domain){ const email = prompt('证书邮箱，可留空'); await action('/api/sites/enable-ssl',{domain,email:email||''}); }
@@ -253,12 +268,13 @@ async function disableSsl(domain){ if(confirm('确认关闭 HTTPS？')) await ac
 async function removeSite(domain){ if(confirm('确认删除站点？')) await action('/api/sites/remove',{domain, delete_cert:false}); }
 async function importSite(domain, source){ if(confirm('确认导入这个已有反向代理站点？导入不会删除原 nginx 配置。')) await action('/api/sites/import',{domain, source}); }
 async function migrateSite(domain){ if(confirm('确认将这个已接管站点迁移为工具受管配置？会备份并注释原始配置块。')) await action('/api/sites/migrate',{domain}); }
+function useService(target){ document.querySelector('#createForm [name="upstream"]').value = target; document.querySelector('#createForm [name="scheme"]').value = 'http'; document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='create')); document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.view==='create')); $('#title').textContent = '新增反代'; }
 $('#logoutBtn').onclick = async()=>{ await api('/api/logout',{method:'POST',body:'{}'}); window.location.replace('/login'); };
 $('#refreshBtn').onclick = ()=>load().catch(e=>showMsg(e.message,'bad'));
 $('#testBtn').onclick = ()=>action('/api/nginx/test',{}).catch(e=>showMsg(e.message,'bad'));
 $('#reloadBtn').onclick = ()=>action('/api/nginx/reload',{}).catch(e=>showMsg(e.message,'bad'));
 $('#createForm').addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(e.target); const body = {domain:f.get('domain'), upstream:f.get('upstream'), scheme:f.get('scheme'), email:f.get('email'), ssl:f.has('ssl'), body:f.get('body'), readTimeout:f.get('readTimeout'), backendInsecure:f.has('backendInsecure')}; try { await action('/api/sites/add', body); e.target.reset(); } catch(err){ showMsg(err.message,'bad'); $('#output').textContent = err.message; } });
-document.querySelectorAll('.nav button,[data-jump]').forEach(b => b.onclick = () => { const v=b.dataset.view||b.dataset.jump; document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===v)); document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.view===v)); $('#title').textContent = ({dashboard:'概览',sites:'站点',create:'新增反代',tools:'维护'})[v] || '概览'; });
+document.querySelectorAll('.nav button,[data-jump]').forEach(b => b.onclick = () => { const v=b.dataset.view||b.dataset.jump; document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===v)); document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.view===v)); $('#title').textContent = ({dashboard:'概览',sites:'站点',services:'本机服务',create:'新增反代',tools:'维护'})[v] || '概览'; });
 load().catch(e=>showMsg(e.message,'bad'));
 </script>
 </body>
@@ -361,6 +377,48 @@ def enrich_server_runtime(server: dict[str, object]) -> dict[str, object]:
         "cert_days": cert_days,
         "cert_info": cert_info,
     }
+
+
+def list_local_services() -> list[dict[str, object]]:
+    result = run_cmd(["ss", "-lntpH"], timeout=10)
+    if result["code"] != 0:
+        return []
+
+    services: list[dict[str, object]] = []
+    seen: set[tuple[str, int, str]] = set()
+    for line in str(result["output"]).splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        local_addr = parts[3]
+        process_info = parts[5] if len(parts) > 5 else ""
+        if local_addr.startswith("["):
+            host, _, port_text = local_addr.rpartition(":")
+            host = host.strip("[]")
+        else:
+            host, _, port_text = local_addr.rpartition(":")
+        if not port_text.isdigit():
+            continue
+        port = int(port_text)
+        if port in {80, 443, 8098}:
+            continue
+        proc_match = re.search(r'\("([^\"]+)"', process_info)
+        process = proc_match.group(1) if proc_match else (process_info or "unknown")
+        exposed = host in {"*", "0.0.0.0", "::"}
+        normalized_host = "127.0.0.1" if host in {"*", "0.0.0.0", "::", "::1", "[::]"} else host
+        key = (normalized_host, port, process)
+        if key in seen:
+            continue
+        seen.add(key)
+        services.append({
+            "host": normalized_host,
+            "port": port,
+            "process": process,
+            "exposed": exposed,
+        })
+
+    services.sort(key=lambda item: (item["host"] != "127.0.0.1", item["port"], item["process"]))
+    return services
 
 
 def parse_server_block(block: list[str], source: str, managed_by_domain: dict[str, dict[str, str]]) -> dict[str, object]:
@@ -834,6 +892,7 @@ class Handler(BaseHTTPRequestHandler):
             active = run_cmd(["systemctl", "is-active", "nginx"], timeout=10)
             self.send_json({
                 "sites": list_nginx_servers(),
+                "services": list_local_services(),
                 "nginx_active": (active["output"] or "unknown"),
                 "manager_exists": pathlib.Path(MANAGER_BIN).exists(),
                 "bind": BIND,
