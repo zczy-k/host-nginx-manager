@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import http.cookies
 import http.client
+import ipaddress
 import json
 import os
 import pathlib
@@ -174,6 +175,7 @@ APP_HTML = r'''<!doctype html>
         <div class="panel"><div class="stat-label">管理脚本</div><div id="managerInfo" class="stat-value">-</div></div>
         <div class="panel"><div class="stat-label">后端异常</div><div id="backendBadCount" class="stat-value">-</div></div>
         <div class="panel"><div class="stat-label">证书预警</div><div id="certWarnCount" class="stat-value">-</div></div>
+        <div class="panel"><div class="stat-label">DNS 异常</div><div id="dnsBadCount" class="stat-value">-</div></div>
         <div class="panel"><div class="stat-label">本机服务</div><div id="serviceCount" class="stat-value">-</div></div>
       </div>
       <div class="grid dashboard-grid">
@@ -194,6 +196,7 @@ APP_HTML = r'''<!doctype html>
             <option value="problems">问题站点</option>
             <option value="backend_bad">后端异常</option>
             <option value="cert_warn">证书预警</option>
+            <option value="dns_bad">DNS 异常</option>
             <option value="managed">受管站点</option>
             <option value="imported">已接管</option>
             <option value="importable">可接管</option>
@@ -225,6 +228,7 @@ APP_HTML = r'''<!doctype html>
             <option value="warn">即将到期</option>
             <option value="missing">证书缺失</option>
             <option value="error">证书异常</option>
+            <option value="dns_bad">DNS 异常</option>
             <option value="managed">仅受管站点</option>
           </select>
           <button class="btn" id="certSearchClear" type="button">清空筛选</button>
@@ -278,8 +282,18 @@ function switchView(view){
   document.querySelectorAll('.nav button').forEach(x => x.classList.toggle('active', x.dataset.view === view));
   $('#title').textContent = VIEW_TITLES[view] || VIEW_TITLES.dashboard;
 }
+function hasDnsIssue(site){
+  return site.dns_status === 'bad' || site.dns_status === 'error';
+}
+function dnsTagHtml(site){
+  if (site.dns_status === 'ok') return '<span class="tag ok">DNS 正常</span>';
+  if (site.dns_status === 'warn') return '<span class="tag warn">DNS 待确认</span>';
+  if (site.dns_status === 'bad') return '<span class="tag bad">DNS 未指向</span>';
+  if (site.dns_status === 'error') return '<span class="tag bad">DNS 查询失败</span>';
+  return '';
+}
 function isProblemSite(site){
-  return site.backend_status === 'bad' || CERT_WARN_STATES.has(site.cert_status);
+  return site.backend_status === 'bad' || CERT_WARN_STATES.has(site.cert_status) || hasDnsIssue(site);
 }
 function siteSearchText(site){
   return [
@@ -289,7 +303,8 @@ function siteSearchText(site){
     site.source || '',
     site.kind || '',
     site.backend_detail || '',
-    site.cert_info || ''
+    site.cert_info || '',
+    site.dns_detail || ''
   ].join(' ').toLowerCase();
 }
 function siteMatchesFilter(site){
@@ -297,6 +312,7 @@ function siteMatchesFilter(site){
     case 'problems': return isProblemSite(site);
     case 'backend_bad': return site.backend_status === 'bad';
     case 'cert_warn': return CERT_WARN_STATES.has(site.cert_status);
+    case 'dns_bad': return hasDnsIssue(site);
     case 'managed': return !!site.managed;
     case 'imported': return !!site.imported;
     case 'importable': return !!site.importable;
@@ -322,18 +338,20 @@ function certificateSearchText(site){
     site.source || '',
     site.kind || '',
     site.upstream || site.root || '',
-    site.readonly_reason || ''
+    site.readonly_reason || '',
+    site.dns_detail || ''
   ].join(' ').toLowerCase();
 }
 function certificateMatchesFilter(site){
   switch (certFilter) {
-    case 'issues': return !site.https || CERT_WARN_STATES.has(site.cert_status);
+    case 'issues': return !site.https || CERT_WARN_STATES.has(site.cert_status) || hasDnsIssue(site);
     case 'enabled': return !!site.https;
     case 'needs_https': return !site.https && !!site.managed && !site.imported;
     case 'ok': return site.cert_status === 'ok';
     case 'warn': return site.cert_status === 'warn';
     case 'missing': return site.cert_status === 'missing';
     case 'error': return site.cert_status === 'error';
+    case 'dns_bad': return hasDnsIssue(site);
     case 'managed': return !!site.managed;
     default: return true;
   }
@@ -368,6 +386,7 @@ function renderProblemRows(){
     const tags = [];
     if(site.backend_status === 'bad') tags.push('<span class="tag bad">后端异常</span>');
     if(CERT_WARN_STATES.has(site.cert_status)) tags.push(`<span class="tag ${site.cert_status === 'warn' ? 'warn' : 'bad'}">证书异常</span>`);
+    if(hasDnsIssue(site)) tags.push(dnsTagHtml(site));
     return `<div class="list-item"><div class="row"><div class="title">${escapeHtml(domain)}</div><span class="spacer"></span>${tags.join(' ')}</div><div class="meta">${escapeHtml(target)}</div><div class="actions"><button class="btn small" type="button" onclick="focusSite('${jumpTarget}')">定位到站点</button></div></div>`;
   }).join('') : '<div class="muted">当前没有需要优先处理的站点。</div>';
 }
@@ -383,6 +402,7 @@ function renderCertificateRows(){
     const names = Array.isArray(s.names) && s.names.length ? s.names.join(', ') : domain;
     const target = s.upstream || s.root || '-';
     const owner = s.managed ? `<span class="tag ok">${s.migrated || !s.imported ? '受管' : '已接管'}</span>` : '<span class="tag">现有</span>';
+    const dnsTag = dnsTagHtml(s);
     const statusTag = !s.https
       ? '<span class="tag">未启用HTTPS</span>'
       : (s.cert_status === 'ok'
@@ -390,7 +410,7 @@ function renderCertificateRows(){
         : (s.cert_status === 'warn'
           ? `<span class="tag warn">证书${s.cert_days ?? '-'}天</span>`
           : '<span class="tag bad">证书异常</span>'));
-    const statusDetail = s.https ? (s.cert_info || '已启用 HTTPS') : (s.managed && !s.imported ? '可直接申请证书' : '当前仅 HTTP');
+    const statusDetail = (s.https ? (s.cert_info || '已启用 HTTPS') : (s.managed && !s.imported ? '可直接申请证书' : '当前仅 HTTP')) + (s.dns_detail ? ` | DNS: ${s.dns_detail}` : '');
     let actions = `<button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
     if (s.managed && !s.imported) {
       actions = s.https
@@ -401,7 +421,7 @@ function renderCertificateRows(){
     } else if (s.imported) {
       actions = `<button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button><span class="muted">迁移后再改证书</span>`;
     }
-    return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${statusTag}<div class="muted">${escapeHtml(statusDetail)}</div></td><td>${owner} ${s.https ? '<span class="tag ok">HTTPS</span>' : '<span class="tag warn">HTTP</span>'}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div><div class="muted">${escapeHtml(target)}</div></td><td>${escapeHtml(s.source || '-')}${s.cert_info ? `<div class="muted">${escapeHtml(s.cert_info)}</div>` : ''}</td><td class="row">${actions}</td></tr>`;
+    return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${statusTag}<div class="muted">${escapeHtml(statusDetail)}</div></td><td>${owner} ${s.https ? '<span class="tag ok">HTTPS</span>' : '<span class="tag warn">HTTP</span>'} ${dnsTag}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div><div class="muted">${escapeHtml(target)}</div></td><td>${escapeHtml(s.source || '-')}${s.cert_info ? `<div class="muted">${escapeHtml(s.cert_info)}</div>` : ''}${s.dns_detail ? `<div class="muted">DNS: ${escapeHtml(s.dns_detail)}</div>` : ''}</td><td class="row">${actions}</td></tr>`;
   }).join('');
   $('#certRows').innerHTML = rows || '<tr><td colspan="5" class="muted">没有匹配当前筛选条件的证书站点</td></tr>';
 }
@@ -412,6 +432,7 @@ function render(){
   $('#managerInfo').textContent = state.manager_exists ? '已安装' : '缺失';
   $('#backendBadCount').textContent = state.sites.filter(s => s.backend_status === 'bad').length;
   $('#certWarnCount').textContent = state.sites.filter(s => CERT_WARN_STATES.has(s.cert_status)).length;
+  $('#dnsBadCount').textContent = state.sites.filter(s => hasDnsIssue(s)).length;
   $('#serviceCount').textContent = state.services.length;
   renderProblemRows();
   renderCertificateRows();
@@ -433,6 +454,7 @@ function render(){
       : (s.cert_status === 'warn'
         ? `<span class="tag warn">证书${s.cert_days ?? '-'}天</span>`
         : (s.cert_status === 'missing' || s.cert_status === 'error' ? '<span class="tag bad">证书异常</span>' : ''));
+    const dnsTag = dnsTagHtml(s);
     let actions = '<span class="muted">只读</span>';
     if (s.migrated) {
       actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><span class="muted">原样受管</span>`;
@@ -445,7 +467,7 @@ function render(){
     } else if (s.readonly_reason) {
       actions = `<span class="muted">${escapeHtml(s.readonly_reason)}</span>`;
     }
-    return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${escapeHtml(listen)}</td><td>${owner} ${https} ${backendTag} ${certTag}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div></td><td>${escapeHtml(target)}${s.backend_detail ? `<div class="muted">${escapeHtml(s.backend_detail)}</div>` : ''}</td><td>${escapeHtml(s.source || '-')}${s.cert_info ? `<div class="muted">${escapeHtml(s.cert_info)}</div>` : ''}</td><td class="row">${actions}</td></tr>`;
+    return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${escapeHtml(listen)}</td><td>${owner} ${https} ${backendTag} ${certTag} ${dnsTag}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div></td><td>${escapeHtml(target)}${s.backend_detail ? `<div class="muted">${escapeHtml(s.backend_detail)}</div>` : ''}</td><td>${escapeHtml(s.source || '-')}${s.cert_info ? `<div class="muted">${escapeHtml(s.cert_info)}</div>` : ''}${s.dns_detail ? `<div class="muted">DNS: ${escapeHtml(s.dns_detail)}</div>` : ''}</td><td class="row">${actions}</td></tr>`;
   }).join('');
   $('#siteRows').innerHTML = rows || '<tr><td colspan="6" class="muted">没有匹配当前筛选条件的站点</td></tr>';
   const serviceRows = state.services.map(s => {
@@ -556,7 +578,71 @@ def read_certificate_status(cert_path: str) -> tuple[str, int | None, str]:
         return "error", None, cert_path
 
 
-def enrich_server_runtime(server: dict[str, object]) -> dict[str, object]:
+def normalize_ip(value: str) -> str:
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return ""
+
+
+def list_local_ip_addresses() -> list[str]:
+    local_ips: list[str] = []
+    seen: set[str] = set()
+
+    def add_ip(candidate: str) -> None:
+        ip = normalize_ip(candidate)
+        if not ip or ip in {"127.0.0.1", "::1"} or ip in seen:
+            return
+        seen.add(ip)
+        local_ips.append(ip)
+
+    result = run_cmd(["hostname", "-I"], timeout=10)
+    if result["code"] == 0:
+        for part in str(result["output"]).split():
+            add_ip(part)
+
+    if not local_ips:
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, type=socket.SOCK_STREAM):
+                sockaddr = info[4]
+                if sockaddr:
+                    add_ip(str(sockaddr[0]))
+        except OSError:
+            pass
+
+    return local_ips
+
+
+def check_domain_dns(domain: str, local_ips: Optional[list[str]] = None) -> tuple[str, list[str], str]:
+    if not DOMAIN_RE.match(domain):
+        return "none", [], ""
+
+    local_ips = list(local_ips or list_local_ip_addresses())
+    resolved: list[str] = []
+    seen: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(domain, 443, type=socket.SOCK_STREAM):
+            sockaddr = info[4]
+            if not sockaddr:
+                continue
+            ip = normalize_ip(str(sockaddr[0]))
+            if not ip or ip in seen:
+                continue
+            seen.add(ip)
+            resolved.append(ip)
+    except OSError as exc:
+        return "error", [], str(exc)
+
+    if not resolved:
+        return "bad", [], "未解析到 A/AAAA 记录"
+    if local_ips and any(ip in local_ips for ip in resolved):
+        return "ok", resolved, ", ".join(resolved)
+    if local_ips:
+        return "bad", resolved, f"当前解析: {', '.join(resolved)}; 本机: {', '.join(local_ips)}"
+    return "warn", resolved, ", ".join(resolved)
+
+
+def enrich_server_runtime(server: dict[str, object], local_ips: Optional[list[str]] = None) -> dict[str, object]:
     backend_status = "unknown"
     backend_detail = ""
     if server.get("kind") == "反向代理":
@@ -565,10 +651,14 @@ def enrich_server_runtime(server: dict[str, object]) -> dict[str, object]:
             _, target = split_proxy_upstream(str(server.get("upstream") or ""))
         backend_status, backend_detail = check_backend_target(target)
 
+    if local_ips is None:
+        local_ips = list_local_ip_addresses()
+
     cert_path = str(server.get("ssl_cert_path") or "")
     if server.get("https") and not cert_path and DOMAIN_RE.match(str(server.get("domain") or "")):
         cert_path = f"/etc/letsencrypt/live/{server['domain']}/fullchain.pem"
     cert_status, cert_days, cert_info = read_certificate_status(cert_path) if server.get("https") else ("none", None, "")
+    dns_status, dns_ips, dns_detail = check_domain_dns(str(server.get("domain") or ""), local_ips)
 
     return {
         **server,
@@ -577,6 +667,9 @@ def enrich_server_runtime(server: dict[str, object]) -> dict[str, object]:
         "cert_status": cert_status,
         "cert_days": cert_days,
         "cert_info": cert_info,
+        "dns_status": dns_status,
+        "dns_ips": dns_ips,
+        "dns_detail": dns_detail,
     }
 
 
@@ -716,6 +809,7 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
 def list_nginx_servers() -> list[dict[str, object]]:
     managed_sites = list_managed_sites()
     managed_by_domain = {str(site.get("DOMAIN", "")): site for site in managed_sites}
+    local_ips = list_local_ip_addresses()
     dump = run_cmd(["nginx", "-T"], timeout=20)
     if dump["code"] != 0:
         return [enrich_server_runtime({
@@ -736,7 +830,7 @@ def list_nginx_servers() -> list[dict[str, object]]:
             "upstream_scheme": site.get("UPSTREAM_SCHEME", "http"),
             "upstream_target": site.get("UPSTREAM", ""),
             "ssl_cert_path": f"/etc/letsencrypt/live/{site.get('DOMAIN', '')}/fullchain.pem" if site.get("ENABLE_SSL") == "1" else "",
-        }) for site in managed_sites]
+        }, local_ips) for site in managed_sites]
 
     servers: list[dict[str, object]] = []
     current_file = "nginx -T"
@@ -783,9 +877,9 @@ def list_nginx_servers() -> list[dict[str, object]]:
                 "upstream_scheme": site.get("UPSTREAM_SCHEME", "http"),
                 "upstream_target": site.get("UPSTREAM", ""),
                 "ssl_cert_path": f"/etc/letsencrypt/live/{domain}/fullchain.pem" if site.get("ENABLE_SSL") == "1" else "",
-            }))
+            }, local_ips))
 
-    return [enrich_server_runtime(server) for server in servers]
+    return [enrich_server_runtime(server, local_ips) for server in servers]
 
 
 def write_managed_state(domain: str, values: dict[str, str]) -> pathlib.Path:
