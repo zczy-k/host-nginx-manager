@@ -213,13 +213,15 @@ function render(){
     const names = Array.isArray(s.names) && s.names.length ? s.names.join(', ') : domain;
     const listen = Array.isArray(s.listen) && s.listen.length ? s.listen.join(', ') : '-';
     const target = s.upstream || s.root || '-';
-    const owner = s.managed ? `<span class="tag ok">${s.imported ? '已接管' : '受管'}</span>` : '<span class="tag">已有</span>';
+    const owner = s.managed ? `<span class="tag ok">${s.migrated || !s.imported ? '受管' : '已接管'}</span>` : '<span class="tag">已有</span>';
     const https = s.https ? '<span class="tag ok">HTTPS</span>' : '<span class="tag warn">HTTP</span>';
     let actions = '<span class="muted">只读</span>';
-    if (s.managed && !s.imported) {
+    if (s.migrated) {
+      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><span class="muted">原样受管</span>`;
+    } else if (s.managed && !s.imported) {
       actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`;
     } else if (s.imported) {
-      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><span class="muted">原配置</span>`;
+      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button>${s.migrated ? '<span class="muted">受管文件</span>' : `<button class="btn small" onclick="migrateSite('${actionDomain}')">迁移为受管</button><span class="muted">原配置</span>`}`;
     } else if (s.importable) {
       actions = `<button class="btn small primary" onclick="importSite('${actionDomain}', '${actionSource}')">导入/接管</button>`;
     } else if (s.readonly_reason) {
@@ -235,6 +237,7 @@ async function editSite(domain, currentTarget){ const target = prompt('新的后
 async function disableSsl(domain){ if(confirm('确认关闭 HTTPS？')) await action('/api/sites/disable-ssl',{domain}); }
 async function removeSite(domain){ if(confirm('确认删除站点？')) await action('/api/sites/remove',{domain, delete_cert:false}); }
 async function importSite(domain, source){ if(confirm('确认导入这个已有反向代理站点？导入不会删除原 nginx 配置。')) await action('/api/sites/import',{domain, source}); }
+async function migrateSite(domain){ if(confirm('确认将这个已接管站点迁移为工具受管配置？会备份并注释原始配置块。')) await action('/api/sites/migrate',{domain}); }
 $('#logoutBtn').onclick = async()=>{ await api('/api/logout',{method:'POST',body:'{}'}); window.location.replace('/login'); };
 $('#refreshBtn').onclick = ()=>load().catch(e=>showMsg(e.message,'bad'));
 $('#testBtn').onclick = ()=>action('/api/nginx/test',{}).catch(e=>showMsg(e.message,'bad'));
@@ -368,6 +371,7 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
         "https": https,
         "managed": managed,
         "imported": managed_state.get("IMPORTED") == "1",
+        "migrated": managed_state.get("MIGRATED") == "1",
         "importable": importable,
         "readonly_reason": readonly_reason,
         "source": source,
@@ -392,6 +396,7 @@ def list_nginx_servers() -> list[dict[str, object]]:
             "https": site.get("ENABLE_SSL") == "1",
             "managed": True,
             "imported": site.get("IMPORTED") == "1",
+            "migrated": site.get("MIGRATED") == "1",
             "importable": False,
             "readonly_reason": "",
             "source": "状态文件，nginx -T 读取失败",
@@ -437,6 +442,7 @@ def list_nginx_servers() -> list[dict[str, object]]:
                 "https": site.get("ENABLE_SSL") == "1",
                 "managed": True,
                 "imported": site.get("IMPORTED") == "1",
+                "migrated": site.get("MIGRATED") == "1",
                 "importable": False,
                 "readonly_reason": "",
                 "source": "状态文件，当前 nginx 配置未发现",
@@ -446,6 +452,33 @@ def list_nginx_servers() -> list[dict[str, object]]:
             })
 
     return servers
+
+
+def write_managed_state(domain: str, values: dict[str, str]) -> pathlib.Path:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state_path = STATE_DIR / f"{domain}.env"
+    lines = [
+        f"DOMAIN={domain}",
+        f"UPSTREAM={values.get('UPSTREAM', '')}",
+        f"UPSTREAM_SCHEME={values.get('UPSTREAM_SCHEME', 'http')}",
+        f"ENABLE_SSL={values.get('ENABLE_SSL', '0')}",
+        f"CERTBOT_EMAIL={values.get('CERTBOT_EMAIL', '')}",
+        f"CLIENT_MAX_BODY_SIZE={values.get('CLIENT_MAX_BODY_SIZE', '64m')}",
+        f"PROXY_READ_TIMEOUT={values.get('PROXY_READ_TIMEOUT', '300s')}",
+        f"PROXY_SEND_TIMEOUT={values.get('PROXY_SEND_TIMEOUT', '300s')}",
+        f"WEBSOCKET={values.get('WEBSOCKET', '1')}",
+        f"BACKEND_INSECURE={values.get('BACKEND_INSECURE', '0')}",
+        f"IMPORTED={values.get('IMPORTED', '0')}",
+        f"MIGRATED={values.get('MIGRATED', '0')}",
+    ]
+    if values.get("IMPORTED_SOURCE"):
+        lines.append(f"IMPORTED_SOURCE={values['IMPORTED_SOURCE']}")
+    if values.get("MIGRATED_FROM"):
+        lines.append(f"MIGRATED_FROM={values['MIGRATED_FROM']}")
+    lines.append("")
+    state_path.write_text("\n".join(lines), encoding="utf-8")
+    os.chmod(state_path, 0o600)
+    return state_path
 
 
 def import_existing_site(domain: str, source: str) -> dict[str, object]:
@@ -465,27 +498,20 @@ def import_existing_site(domain: str, source: str) -> dict[str, object]:
     if upstream_scheme not in {"http", "https"} or not re.match(r"^[^/:]+:\d+$", upstream_target):
         return {"code": 5, "output": "只支持导入明确的 http/https HOST:PORT 反向代理"}
 
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    state_path = STATE_DIR / f"{domain}.env"
-    state_path.write_text(
-        "\n".join([
-            f"DOMAIN={domain}",
-            f"UPSTREAM={upstream_target}",
-            f"UPSTREAM_SCHEME={upstream_scheme}",
-            f"ENABLE_SSL={'1' if server.get('https') else '0'}",
-            "CERTBOT_EMAIL=",
-            "CLIENT_MAX_BODY_SIZE=64m",
-            "PROXY_READ_TIMEOUT=300s",
-            "PROXY_SEND_TIMEOUT=300s",
-            "WEBSOCKET=1",
-            "BACKEND_INSECURE=0",
-            "IMPORTED=1",
-            f"IMPORTED_SOURCE={source}",
-            "",
-        ]),
-        encoding="utf-8",
-    )
-    os.chmod(state_path, 0o600)
+    write_managed_state(domain, {
+        "UPSTREAM": upstream_target,
+        "UPSTREAM_SCHEME": upstream_scheme,
+        "ENABLE_SSL": "1" if server.get("https") else "0",
+        "CERTBOT_EMAIL": "",
+        "CLIENT_MAX_BODY_SIZE": "64m",
+        "PROXY_READ_TIMEOUT": "300s",
+        "PROXY_SEND_TIMEOUT": "300s",
+        "WEBSOCKET": "1",
+        "BACKEND_INSECURE": "0",
+        "IMPORTED": "1",
+        "MIGRATED": "0",
+        "IMPORTED_SOURCE": source,
+    })
     return {"code": 0, "output": f"已导入：{domain} -> {upstream_scheme}://{upstream_target}"}
 
 
@@ -528,8 +554,8 @@ def update_imported_site(domain: str, target: str) -> dict[str, object]:
 
     state_path = STATE_DIR / f"{domain}.env"
     state = parse_state_file(state_path)
-    if state.get("IMPORTED") != "1":
-        return {"code": 3, "output": "该站点不是导入站点"}
+    if state.get("IMPORTED") != "1" and state.get("MIGRATED") != "1":
+        return {"code": 3, "output": "该站点不是导入/迁移站点"}
 
     source = state.get("IMPORTED_SOURCE", "")
     if not source:
@@ -567,29 +593,80 @@ def update_imported_site(domain: str, target: str) -> dict[str, object]:
     if reload_result["code"] != 0:
         reload_result = run_cmd(["nginx", "-s", "reload"], timeout=20)
 
-    state["UPSTREAM"] = upstream
-    state["UPSTREAM_SCHEME"] = scheme
-    state["IMPORTED_SOURCE"] = str(source_path)
-    state_path.write_text(
-        "\n".join([
-            f"DOMAIN={domain}",
-            f"UPSTREAM={state.get('UPSTREAM', upstream)}",
-            f"UPSTREAM_SCHEME={state.get('UPSTREAM_SCHEME', scheme)}",
-            f"ENABLE_SSL={state.get('ENABLE_SSL', '0')}",
-            f"CERTBOT_EMAIL={state.get('CERTBOT_EMAIL', '')}",
-            f"CLIENT_MAX_BODY_SIZE={state.get('CLIENT_MAX_BODY_SIZE', '64m')}",
-            f"PROXY_READ_TIMEOUT={state.get('PROXY_READ_TIMEOUT', '300s')}",
-            f"PROXY_SEND_TIMEOUT={state.get('PROXY_SEND_TIMEOUT', '300s')}",
-            f"WEBSOCKET={state.get('WEBSOCKET', '1')}",
-            f"BACKEND_INSECURE={state.get('BACKEND_INSECURE', '0')}",
-            "IMPORTED=1",
-            f"IMPORTED_SOURCE={source_path}",
-            "",
-        ]),
-        encoding="utf-8",
-    )
-    os.chmod(state_path, 0o600)
+    write_managed_state(domain, {
+        **state,
+        "UPSTREAM": upstream,
+        "UPSTREAM_SCHEME": scheme,
+        "IMPORTED_SOURCE": str(source_path),
+    })
     output = f"已更新原 nginx 配置：{domain} -> {scheme}://{upstream}\n备份：{backup_path}\n{reload_result['output']}".strip()
+    return {"code": reload_result["code"], "output": output}
+
+
+def migrate_imported_site(domain: str) -> dict[str, object]:
+    domain = domain.strip().lower()
+    if not DOMAIN_RE.match(domain):
+        return {"code": 2, "output": "域名无效"}
+
+    state_path = STATE_DIR / f"{domain}.env"
+    state = parse_state_file(state_path)
+    if state.get("IMPORTED") != "1":
+        return {"code": 3, "output": "该站点不是已导入状态，不能迁移"}
+
+    source = state.get("IMPORTED_SOURCE", "")
+    source_path = pathlib.Path(source)
+    if not source_path.is_file() or not str(source_path).startswith("/etc/nginx/"):
+        return {"code": 4, "output": "找不到可迁移的原始 nginx 配置文件"}
+
+    lines = source_path.read_text(encoding="utf-8").splitlines()
+    start, end = find_imported_server_block(lines, domain)
+    if start < 0:
+        return {"code": 5, "output": "未能在原配置里定位到可迁移的反向代理块"}
+
+    available_path = pathlib.Path(f"/etc/nginx/sites-available/vpspm-{domain}.conf")
+    enabled_path = pathlib.Path(f"/etc/nginx/sites-enabled/vpspm-{domain}.conf")
+    if available_path.exists() or enabled_path.exists():
+        return {"code": 6, "output": "目标受管配置已存在，请先检查是否已经迁移过"}
+
+    block_lines = lines[start:end + 1]
+    migrated_lines = lines[:]
+    for index in range(start, end + 1):
+        migrated_lines[index] = f"# migrated by host-nginx-manager: {lines[index]}"
+
+    original = source_path.read_text(encoding="utf-8")
+    backup_path = source_path.with_name(f"{source_path.name}.bak-{int(time.time())}")
+    backup_path.write_text(original, encoding="utf-8")
+    source_path.write_text("\n".join(migrated_lines) + "\n", encoding="utf-8")
+
+    available_path.parent.mkdir(parents=True, exist_ok=True)
+    enabled_path.parent.mkdir(parents=True, exist_ok=True)
+    available_path.write_text("\n".join(block_lines) + "\n", encoding="utf-8")
+    os.chmod(available_path, 0o644)
+    if enabled_path.exists() or enabled_path.is_symlink():
+        enabled_path.unlink()
+    enabled_path.symlink_to(available_path)
+
+    test = run_cmd(["nginx", "-t"], timeout=20)
+    if test["code"] != 0:
+        source_path.write_text(original, encoding="utf-8")
+        if enabled_path.exists() or enabled_path.is_symlink():
+            enabled_path.unlink()
+        if available_path.exists():
+            available_path.unlink()
+        return {"code": 7, "output": f"迁移后的 nginx 配置校验失败，已回滚。\n{test['output']}"}
+
+    reload_result = run_cmd(["systemctl", "reload", "nginx"], timeout=20)
+    if reload_result["code"] != 0:
+        reload_result = run_cmd(["nginx", "-s", "reload"], timeout=20)
+
+    write_managed_state(domain, {
+        **state,
+        "IMPORTED": "0",
+        "MIGRATED": "1",
+        "IMPORTED_SOURCE": str(available_path),
+        "MIGRATED_FROM": str(source_path),
+    })
+    output = f"已迁移为受管站点：{domain}\n原配置备份：{backup_path}\n新配置：{available_path}\n{reload_result['output']}".strip()
     return {"code": reload_result["code"], "output": output}
 
 
@@ -732,13 +809,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"message": "站点已导入", **result}, 200 if result["code"] == 0 else 400)
             return
 
+        if path == "/api/sites/migrate":
+            result = migrate_imported_site(domain)
+            self.send_json({"message": "站点已迁移", **result}, 200 if result["code"] == 0 else 400)
+            return
+
         if path == "/api/sites/update":
             scheme, upstream = parse_edit_target(str(data.get("target", "")))
             if not scheme or not upstream:
                 self.send_json({"error": "后端地址必须是 HOST:PORT 或 http(s)://HOST:PORT"}, 400)
                 return
             state = parse_state_file(STATE_DIR / f"{domain.strip().lower()}.env")
-            if state.get("IMPORTED") == "1":
+            if state.get("IMPORTED") == "1" or state.get("MIGRATED") == "1":
                 result = update_imported_site(domain, f"{scheme}://{upstream}")
             else:
                 result = run_cmd([MANAGER_BIN, "update", domain, upstream, "--upstream-scheme", scheme], timeout=120)
