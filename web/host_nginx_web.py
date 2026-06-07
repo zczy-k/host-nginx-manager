@@ -6,13 +6,17 @@ import base64
 import hashlib
 import hmac
 import http.cookies
+import http.client
 import json
 import os
 import pathlib
 import re
 import secrets
+import socket
+import ssl
 import subprocess
 import time
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
@@ -28,6 +32,7 @@ SECRET = os.environ.get("HNG_WEB_SECRET", "") or secrets.token_urlsafe(32)
 COOKIE_NAME = "hng_session"
 SESSION_TTL = 12 * 60 * 60
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z0-9.-]+$")
+CERT_WARN_DAYS = 30
 
 PAGE_CSS = r'''
   <style>
@@ -156,6 +161,8 @@ APP_HTML = r'''<!doctype html>
         <div class="panel"><div class="stat-label">Nginx 站点</div><div id="siteCount" class="stat-value">-</div></div>
         <div class="panel"><div class="stat-label">监听地址</div><div id="bindInfo" class="stat-value">-</div></div>
         <div class="panel"><div class="stat-label">管理脚本</div><div id="managerInfo" class="stat-value">-</div></div>
+        <div class="panel"><div class="stat-label">后端异常</div><div id="backendBadCount" class="stat-value">-</div></div>
+        <div class="panel"><div class="stat-label">证书预警</div><div id="certWarnCount" class="stat-value">-</div></div>
       </div>
       <div class="panel"><h2>当前建议</h2><div class="notice">普通 Web/API 服务可以统一放到不同子域名的 443；Rathole、stream、ssl_preread 仍建议手工维护。</div></div>
     </section>
@@ -205,6 +212,8 @@ function render(){
   $('#siteCount').textContent = state.sites.length;
   $('#bindInfo').textContent = state.bind + ':' + state.port;
   $('#managerInfo').textContent = state.manager_exists ? '已安装' : '缺失';
+  $('#backendBadCount').textContent = state.sites.filter(s => s.backend_status === 'bad').length;
+  $('#certWarnCount').textContent = state.sites.filter(s => s.cert_status === 'warn' || s.cert_status === 'missing' || s.cert_status === 'error').length;
   const rows = state.sites.map(s => {
     const domain = s.domain || '(默认站点)';
     const actionDomain = String(s.managed_domain || domain).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -215,6 +224,12 @@ function render(){
     const target = s.upstream || s.root || '-';
     const owner = s.managed ? `<span class="tag ok">${s.migrated || !s.imported ? '受管' : '已接管'}</span>` : '<span class="tag">已有</span>';
     const https = s.https ? '<span class="tag ok">HTTPS</span>' : '<span class="tag warn">HTTP</span>';
+    const backendTag = s.backend_status === 'ok' ? '<span class="tag ok">后端正常</span>' : (s.backend_status === 'bad' ? '<span class="tag bad">后端异常</span>' : '');
+    const certTag = s.cert_status === 'ok'
+      ? `<span class="tag ok">证书${s.cert_days ?? '-'}天</span>`
+      : (s.cert_status === 'warn'
+        ? `<span class="tag warn">证书${s.cert_days ?? '-'}天</span>`
+        : (s.cert_status === 'missing' || s.cert_status === 'error' ? '<span class="tag bad">证书异常</span>' : ''));
     let actions = '<span class="muted">只读</span>';
     if (s.migrated) {
       actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><span class="muted">原样受管</span>`;
@@ -227,7 +242,7 @@ function render(){
     } else if (s.readonly_reason) {
       actions = `<span class="muted">${escapeHtml(s.readonly_reason)}</span>`;
     }
-    return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${escapeHtml(listen)}</td><td>${owner} ${https}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div></td><td>${escapeHtml(target)}</td><td>${escapeHtml(s.source || '-')}</td><td class="row">${actions}</td></tr>`;
+    return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${escapeHtml(listen)}</td><td>${owner} ${https} ${backendTag} ${certTag}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div></td><td>${escapeHtml(target)}${s.backend_detail ? `<div class="muted">${escapeHtml(s.backend_detail)}</div>` : ''}</td><td>${escapeHtml(s.source || '-')}${s.cert_info ? `<div class="muted">${escapeHtml(s.cert_info)}</div>` : ''}</td><td class="row">${actions}</td></tr>`;
   }).join('');
   $('#siteRows').innerHTML = rows || '<tr><td colspan="6" class="muted">当前 nginx 配置里没有发现 server 站点</td></tr>';
 }
@@ -294,12 +309,67 @@ def parse_edit_target(target: str) -> tuple[str, str]:
     return "", ""
 
 
+def check_backend_target(target: str) -> tuple[str, str]:
+    if not target or "$" in target:
+        return "unknown", "特殊目标"
+    match = re.match(r"^([^:]+):(\d+)$", target)
+    if not match:
+        return "unknown", "格式未知"
+    host = match.group(1)
+    port = int(match.group(2))
+    try:
+        with socket.create_connection((host, port), timeout=1.5):
+            return "ok", f"{host}:{port}"
+    except OSError as exc:
+        return "bad", str(exc)
+
+
+def read_certificate_status(cert_path: str) -> tuple[str, int | None, str]:
+    if not cert_path:
+        return "none", None, ""
+    path = pathlib.Path(cert_path)
+    if not path.is_file():
+        return "missing", None, cert_path
+    try:
+        info = ssl._ssl._test_decode_cert(str(path))
+        expires = datetime.strptime(info["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+        days_left = max(0, int((expires - datetime.now(timezone.utc)).total_seconds() // 86400))
+        return ("warn" if days_left <= CERT_WARN_DAYS else "ok"), days_left, expires.strftime("%Y-%m-%d")
+    except Exception:
+        return "error", None, cert_path
+
+
+def enrich_server_runtime(server: dict[str, object]) -> dict[str, object]:
+    backend_status = "unknown"
+    backend_detail = ""
+    if server.get("kind") == "反向代理":
+        target = str(server.get("upstream_target") or "")
+        if not target:
+            _, target = split_proxy_upstream(str(server.get("upstream") or ""))
+        backend_status, backend_detail = check_backend_target(target)
+
+    cert_path = str(server.get("ssl_cert_path") or "")
+    if server.get("https") and not cert_path and DOMAIN_RE.match(str(server.get("domain") or "")):
+        cert_path = f"/etc/letsencrypt/live/{server['domain']}/fullchain.pem"
+    cert_status, cert_days, cert_info = read_certificate_status(cert_path) if server.get("https") else ("none", None, "")
+
+    return {
+        **server,
+        "backend_status": backend_status,
+        "backend_detail": backend_detail,
+        "cert_status": cert_status,
+        "cert_days": cert_days,
+        "cert_info": cert_info,
+    }
+
+
 def parse_server_block(block: list[str], source: str, managed_by_domain: dict[str, dict[str, str]]) -> dict[str, object]:
     names: list[str] = []
     listens: list[str] = []
     proxy_passes: list[str] = []
     roots: list[str] = []
     has_ssl_cert = False
+    ssl_cert_path = ""
 
     for raw in block:
         line = raw.split("#", 1)[0].strip()
@@ -321,8 +391,10 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
         if match:
             roots.append(match.group(1).strip())
             continue
-        if line.startswith("ssl_certificate "):
+        match = re.match(r"^ssl_certificate\s+(.+?);", line)
+        if match:
             has_ssl_cert = True
+            ssl_cert_path = match.group(1).strip()
 
     managed_domain = next((name for name in names if name in managed_by_domain), "")
     managed_state = managed_by_domain.get(managed_domain, {}) if managed_domain else {}
@@ -378,6 +450,7 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
         "managed_domain": managed_domain,
         "upstream_scheme": upstream_scheme,
         "upstream_target": upstream_target,
+        "ssl_cert_path": ssl_cert_path,
     }
 
 
@@ -386,7 +459,7 @@ def list_nginx_servers() -> list[dict[str, object]]:
     managed_by_domain = {str(site.get("DOMAIN", "")): site for site in managed_sites}
     dump = run_cmd(["nginx", "-T"], timeout=20)
     if dump["code"] != 0:
-        return [{
+        return [enrich_server_runtime({
             "domain": site.get("DOMAIN", ""),
             "names": [site.get("DOMAIN", "")],
             "listen": [],
@@ -403,7 +476,8 @@ def list_nginx_servers() -> list[dict[str, object]]:
             "managed_domain": site.get("DOMAIN", ""),
             "upstream_scheme": site.get("UPSTREAM_SCHEME", "http"),
             "upstream_target": site.get("UPSTREAM", ""),
-        } for site in managed_sites]
+            "ssl_cert_path": f"/etc/letsencrypt/live/{site.get('DOMAIN', '')}/fullchain.pem" if site.get("ENABLE_SSL") == "1" else "",
+        }) for site in managed_sites]
 
     servers: list[dict[str, object]] = []
     current_file = "nginx -T"
@@ -432,7 +506,7 @@ def list_nginx_servers() -> list[dict[str, object]]:
     for site in managed_sites:
         domain = site.get("DOMAIN", "")
         if domain and domain not in seen_managed:
-            servers.append({
+            servers.append(enrich_server_runtime({
                 "domain": domain,
                 "names": [domain],
                 "listen": [],
@@ -449,9 +523,10 @@ def list_nginx_servers() -> list[dict[str, object]]:
                 "managed_domain": domain,
                 "upstream_scheme": site.get("UPSTREAM_SCHEME", "http"),
                 "upstream_target": site.get("UPSTREAM", ""),
-            })
+                "ssl_cert_path": f"/etc/letsencrypt/live/{domain}/fullchain.pem" if site.get("ENABLE_SSL") == "1" else "",
+            }))
 
-    return servers
+    return [enrich_server_runtime(server) for server in servers]
 
 
 def write_managed_state(domain: str, values: dict[str, str]) -> pathlib.Path:
