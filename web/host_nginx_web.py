@@ -154,6 +154,7 @@ APP_HTML = r'''<!doctype html>
     <div class="brand">Host Nginx Manager</div>
     <nav class="nav">
       <button data-view="dashboard" class="active">概览</button>
+      <button data-view="issues">问题</button>
       <button data-view="sites">站点</button>
       <button data-view="services">本机服务</button>
       <button data-view="certs">证书</button>
@@ -184,6 +185,12 @@ APP_HTML = r'''<!doctype html>
           <div class="row"><h2>待处理站点</h2><span class="spacer"></span><button class="btn small" id="problemJumpBtn" type="button">只看问题</button></div>
           <div id="problemRows" class="list"></div>
         </div>
+      </div>
+    </section>
+    <section id="issues" class="view">
+      <div class="panel">
+        <div class="row"><h2>问题清单</h2><span class="spacer"></span><div id="issueSummary" class="muted"></div></div>
+        <div style="overflow:auto"><table><thead><tr><th>域名</th><th>问题</th><th>当前情况</th><th>操作</th></tr></thead><tbody id="issueRows"></tbody></table></div>
       </div>
     </section>
     <section id="sites" class="view">
@@ -268,7 +275,7 @@ let siteQuery = '';
 let siteFilter = 'all';
 let certQuery = '';
 let certFilter = 'all';
-const VIEW_TITLES = {dashboard:'概览',sites:'站点',services:'本机服务',certs:'证书',create:'新增反代',tools:'维护'};
+const VIEW_TITLES = {dashboard:'概览',issues:'问题',sites:'站点',services:'本机服务',certs:'证书',create:'新增反代',tools:'维护'};
 const CERT_WARN_STATES = new Set(['warn','missing','error']);
 const $ = (s) => document.querySelector(s);
 function showMsg(text, type='info'){
@@ -377,6 +384,53 @@ function focusSite(domain){
   switchView('sites');
   render();
 }
+function buildIssueItems(){
+  const issues = [];
+  for (const site of state.sites) {
+    const domain = site.domain || '(默认站点)';
+    if (site.backend_status === 'bad') {
+      issues.push({kind:'backend', severity:'bad', domain, detail: site.backend_detail || '后端连接失败', site});
+    }
+    if (site.cert_status === 'warn') {
+      issues.push({kind:'cert_warn', severity:'warn', domain, detail: site.cert_info || `证书剩余 ${site.cert_days ?? '-'} 天`, site});
+    }
+    if (site.cert_status === 'missing' || site.cert_status === 'error') {
+      issues.push({kind:'cert_bad', severity:'bad', domain, detail: site.cert_info || '证书不可用', site});
+    }
+    if (hasDnsIssue(site)) {
+      issues.push({kind:'dns', severity:'bad', domain, detail: site.dns_detail || 'DNS 未指向本机', site});
+    }
+  }
+  return issues;
+}
+function issueLabel(issue){
+  if (issue.kind === 'backend') return '后端异常';
+  if (issue.kind === 'cert_warn') return '证书预警';
+  if (issue.kind === 'cert_bad') return '证书异常';
+  if (issue.kind === 'dns') return 'DNS 异常';
+  return '问题';
+}
+function renderIssueRows(){
+  const issues = buildIssueItems();
+  $('#issueSummary').textContent = `共 ${issues.length} 项`;
+  const rows = issues.map(issue => {
+    const site = issue.site;
+    const focusDomain = String(site.managed_domain || site.domain || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const actionDomain = String(site.managed_domain || site.domain || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    let actions = `<button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
+    if (issue.kind === 'dns' && site.importable) {
+      const actionSource = String(site.source || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      actions = `<button class="btn small primary" onclick="importSite('${actionDomain}', '${actionSource}')">先接管</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
+    } else if ((issue.kind === 'cert_warn' || issue.kind === 'cert_bad') && site.managed && !site.imported) {
+      actions = site.https
+        ? `<button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`
+        : `<button class="btn small primary" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
+    }
+    const tagClass = issue.severity === 'warn' ? 'warn' : 'bad';
+    return `<tr><td><strong>${escapeHtml(issue.domain)}</strong></td><td><span class="tag ${tagClass}">${issueLabel(issue)}</span></td><td>${escapeHtml(issue.detail)}<div class="muted">${escapeHtml(site.source || '-')}</div></td><td class="row">${actions}</td></tr>`;
+  }).join('');
+  $('#issueRows').innerHTML = rows || '<tr><td colspan="4" class="muted">当前没有需要处理的问题</td></tr>';
+}
 function renderProblemRows(){
   const problems = state.sites.filter(isProblemSite);
   $('#problemRows').innerHTML = problems.length ? problems.slice(0, 6).map(site => {
@@ -435,6 +489,7 @@ function render(){
   $('#dnsBadCount').textContent = state.sites.filter(s => hasDnsIssue(s)).length;
   $('#serviceCount').textContent = state.services.length;
   renderProblemRows();
+  renderIssueRows();
   renderCertificateRows();
   const filteredSites = getFilteredSites();
   $('#siteSummary').textContent = `显示 ${filteredSites.length} / ${state.sites.length}`;
