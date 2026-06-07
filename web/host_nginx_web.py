@@ -80,10 +80,19 @@ PAGE_CSS = r'''
     .view.active { display:block; }
     pre { margin:0; white-space:pre-wrap; background:#101828; color:#e5e7eb; padding:12px; border-radius:8px; max-height:360px; overflow:auto; }
     .notice { border-left:3px solid var(--blue); background:var(--blue2); padding:10px 12px; border-radius:6px; color:#173b70; }
+    .dashboard-grid { grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr); }
+    .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:12px 0 14px; }
+    .toolbar input { flex:1 1 280px; }
+    .toolbar select { width:min(220px,100%); }
+    .list { display:grid; gap:10px; }
+    .list-item { border:1px solid var(--line); border-radius:6px; padding:12px; background:#fff; }
+    .list-item .title { font-weight:700; }
+    .list-item .meta { color:var(--muted); font-size:12px; margin-top:4px; }
+    .list-item .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
     .login { min-height:100vh; display:grid; place-items:center; padding:24px; }
     .login .panel { width:min(420px,100%); }
     .login-message { margin:12px 0; }
-    @media (max-width:860px) { .shell { grid-template-columns:1fr; } aside { position:sticky; top:0; z-index:5; } .nav { display:flex; overflow:auto; } .nav button { white-space:nowrap; } .stats,.form-grid { grid-template-columns:1fr; } main { padding:16px; } }
+    @media (max-width:860px) { .shell { grid-template-columns:1fr; } aside { position:sticky; top:0; z-index:5; } .nav { display:flex; overflow:auto; } .nav button { white-space:nowrap; } .stats,.form-grid,.dashboard-grid { grid-template-columns:1fr; } .toolbar input,.toolbar select { width:100%; } main { padding:16px; } }
   </style>
 '''
 
@@ -166,11 +175,32 @@ APP_HTML = r'''<!doctype html>
         <div class="panel"><div class="stat-label">证书预警</div><div id="certWarnCount" class="stat-value">-</div></div>
         <div class="panel"><div class="stat-label">本机服务</div><div id="serviceCount" class="stat-value">-</div></div>
       </div>
-      <div class="panel"><h2>当前建议</h2><div class="notice">普通 Web/API 服务可以统一放到不同子域名的 443；Rathole、stream、ssl_preread 仍建议手工维护。</div></div>
+      <div class="grid dashboard-grid">
+        <div class="panel"><h2>当前建议</h2><div class="notice">普通 Web/API 服务可以统一放到不同子域名的 443；Rathole、stream、ssl_preread 仍建议手工维护。</div></div>
+        <div class="panel">
+          <div class="row"><h2>待处理站点</h2><span class="spacer"></span><button class="btn small" id="problemJumpBtn" type="button">只看问题</button></div>
+          <div id="problemRows" class="list"></div>
+        </div>
+      </div>
     </section>
     <section id="sites" class="view">
       <div class="panel">
-        <div class="row"><h2>Nginx 站点</h2><span class="spacer"></span><button class="btn primary" data-jump="create">新增</button></div>
+        <div class="row"><h2>Nginx 站点</h2><span class="spacer"></span><div id="siteSummary" class="muted"></div><button class="btn primary" data-jump="create">新增</button></div>
+        <div class="toolbar">
+          <input id="siteSearch" placeholder="搜索域名、后端、来源">
+          <select id="siteFilter">
+            <option value="all">全部站点</option>
+            <option value="problems">问题站点</option>
+            <option value="backend_bad">后端异常</option>
+            <option value="cert_warn">证书预警</option>
+            <option value="managed">受管站点</option>
+            <option value="imported">已接管</option>
+            <option value="importable">可接管</option>
+            <option value="https">HTTPS</option>
+            <option value="http">HTTP</option>
+          </select>
+          <button class="btn" id="siteSearchClear" type="button">清空筛选</button>
+        </div>
         <div style="overflow:auto"><table><thead><tr><th>域名</th><th>监听</th><th>类型</th><th>目标/目录</th><th>来源</th><th>操作</th></tr></thead><tbody id="siteRows"></tbody></table></div>
       </div>
     </section>
@@ -208,6 +238,10 @@ APP_HTML = r'''<!doctype html>
 </div>
 <script>
 let state = null;
+let siteQuery = '';
+let siteFilter = 'all';
+const VIEW_TITLES = {dashboard:'概览',sites:'站点',services:'本机服务',create:'新增反代',tools:'维护'};
+const CERT_WARN_STATES = new Set(['warn','missing','error']);
 const $ = (s) => document.querySelector(s);
 function showMsg(text, type='info'){
   $('#message').innerHTML = text ? `<div class="panel"><span class="tag ${type}">${type}</span> ${escapeHtml(text)}</div>` : '';
@@ -215,15 +249,83 @@ function showMsg(text, type='info'){
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 async function api(path, opts={}){ const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); if(res.status===401){ window.location.replace('/login'); throw new Error('未登录'); } const data = await res.json(); if(!res.ok) throw new Error(data.error || data.output || '请求失败'); return data; }
 async function load(){ state = await api('/api/status'); render(); }
+function switchView(view){
+  document.querySelectorAll('.view').forEach(x => x.classList.toggle('active', x.id === view));
+  document.querySelectorAll('.nav button').forEach(x => x.classList.toggle('active', x.dataset.view === view));
+  $('#title').textContent = VIEW_TITLES[view] || VIEW_TITLES.dashboard;
+}
+function isProblemSite(site){
+  return site.backend_status === 'bad' || CERT_WARN_STATES.has(site.cert_status);
+}
+function siteSearchText(site){
+  return [
+    site.domain,
+    Array.isArray(site.names) ? site.names.join(' ') : '',
+    site.upstream || site.root || '',
+    site.source || '',
+    site.kind || '',
+    site.backend_detail || '',
+    site.cert_info || ''
+  ].join(' ').toLowerCase();
+}
+function siteMatchesFilter(site){
+  switch (siteFilter) {
+    case 'problems': return isProblemSite(site);
+    case 'backend_bad': return site.backend_status === 'bad';
+    case 'cert_warn': return CERT_WARN_STATES.has(site.cert_status);
+    case 'managed': return !!site.managed;
+    case 'imported': return !!site.imported;
+    case 'importable': return !!site.importable;
+    case 'https': return !!site.https;
+    case 'http': return !site.https;
+    default: return true;
+  }
+}
+function getFilteredSites(){
+  if(!state){ return []; }
+  const query = String(siteQuery || '').trim().toLowerCase();
+  return state.sites.filter(site => siteMatchesFilter(site) && (!query || siteSearchText(site).includes(query)));
+}
+function focusProblemSites(){
+  siteFilter = 'problems';
+  siteQuery = '';
+  $('#siteFilter').value = 'problems';
+  $('#siteSearch').value = '';
+  switchView('sites');
+  render();
+}
+function focusSite(domain){
+  siteFilter = 'all';
+  siteQuery = domain || '';
+  $('#siteFilter').value = 'all';
+  $('#siteSearch').value = siteQuery;
+  switchView('sites');
+  render();
+}
+function renderProblemRows(){
+  const problems = state.sites.filter(isProblemSite);
+  $('#problemRows').innerHTML = problems.length ? problems.slice(0, 6).map(site => {
+    const domain = site.domain || '(默认站点)';
+    const target = site.upstream || site.root || '-';
+    const jumpTarget = String(domain).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const tags = [];
+    if(site.backend_status === 'bad') tags.push('<span class="tag bad">后端异常</span>');
+    if(CERT_WARN_STATES.has(site.cert_status)) tags.push(`<span class="tag ${site.cert_status === 'warn' ? 'warn' : 'bad'}">证书异常</span>`);
+    return `<div class="list-item"><div class="row"><div class="title">${escapeHtml(domain)}</div><span class="spacer"></span>${tags.join(' ')}</div><div class="meta">${escapeHtml(target)}</div><div class="actions"><button class="btn small" type="button" onclick="focusSite('${jumpTarget}')">定位到站点</button></div></div>`;
+  }).join('') : '<div class="muted">当前没有需要优先处理的站点。</div>';
+}
 function render(){
   $('#nginxStatus').innerHTML = `<span class="tag ${state.nginx_active==='active'?'ok':'bad'}">${escapeHtml(state.nginx_active)}</span>`;
   $('#siteCount').textContent = state.sites.length;
   $('#bindInfo').textContent = state.bind + ':' + state.port;
   $('#managerInfo').textContent = state.manager_exists ? '已安装' : '缺失';
   $('#backendBadCount').textContent = state.sites.filter(s => s.backend_status === 'bad').length;
-  $('#certWarnCount').textContent = state.sites.filter(s => s.cert_status === 'warn' || s.cert_status === 'missing' || s.cert_status === 'error').length;
+  $('#certWarnCount').textContent = state.sites.filter(s => CERT_WARN_STATES.has(s.cert_status)).length;
   $('#serviceCount').textContent = state.services.length;
-  const rows = state.sites.map(s => {
+  renderProblemRows();
+  const filteredSites = getFilteredSites();
+  $('#siteSummary').textContent = `显示 ${filteredSites.length} / ${state.sites.length}`;
+  const rows = filteredSites.map(s => {
     const domain = s.domain || '(默认站点)';
     const actionDomain = String(s.managed_domain || domain).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const actionSource = String(s.source || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -253,7 +355,7 @@ function render(){
     }
     return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${escapeHtml(listen)}</td><td>${owner} ${https} ${backendTag} ${certTag}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div></td><td>${escapeHtml(target)}${s.backend_detail ? `<div class="muted">${escapeHtml(s.backend_detail)}</div>` : ''}</td><td>${escapeHtml(s.source || '-')}${s.cert_info ? `<div class="muted">${escapeHtml(s.cert_info)}</div>` : ''}</td><td class="row">${actions}</td></tr>`;
   }).join('');
-  $('#siteRows').innerHTML = rows || '<tr><td colspan="6" class="muted">当前 nginx 配置里没有发现 server 站点</td></tr>';
+  $('#siteRows').innerHTML = rows || '<tr><td colspan="6" class="muted">没有匹配当前筛选条件的站点</td></tr>';
   const serviceRows = state.services.map(s => {
     const target = `${s.host}:${s.port}`;
     const actionTarget = String(target).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -268,13 +370,17 @@ async function disableSsl(domain){ if(confirm('确认关闭 HTTPS？')) await ac
 async function removeSite(domain){ if(confirm('确认删除站点？')) await action('/api/sites/remove',{domain, delete_cert:false}); }
 async function importSite(domain, source){ if(confirm('确认导入这个已有反向代理站点？导入不会删除原 nginx 配置。')) await action('/api/sites/import',{domain, source}); }
 async function migrateSite(domain){ if(confirm('确认将这个已接管站点迁移为工具受管配置？会备份并注释原始配置块。')) await action('/api/sites/migrate',{domain}); }
-function useService(target){ document.querySelector('#createForm [name="upstream"]').value = target; document.querySelector('#createForm [name="scheme"]').value = 'http'; document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='create')); document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.view==='create')); $('#title').textContent = '新增反代'; }
+function useService(target){ document.querySelector('#createForm [name="upstream"]').value = target; document.querySelector('#createForm [name="scheme"]').value = 'http'; switchView('create'); }
 $('#logoutBtn').onclick = async()=>{ await api('/api/logout',{method:'POST',body:'{}'}); window.location.replace('/login'); };
 $('#refreshBtn').onclick = ()=>load().catch(e=>showMsg(e.message,'bad'));
 $('#testBtn').onclick = ()=>action('/api/nginx/test',{}).catch(e=>showMsg(e.message,'bad'));
 $('#reloadBtn').onclick = ()=>action('/api/nginx/reload',{}).catch(e=>showMsg(e.message,'bad'));
+$('#problemJumpBtn').onclick = ()=>focusProblemSites();
+$('#siteSearch').addEventListener('input', e => { siteQuery = e.target.value; render(); });
+$('#siteFilter').addEventListener('change', e => { siteFilter = e.target.value; render(); });
+$('#siteSearchClear').onclick = () => { siteQuery = ''; siteFilter = 'all'; $('#siteSearch').value = ''; $('#siteFilter').value = 'all'; render(); };
 $('#createForm').addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(e.target); const body = {domain:f.get('domain'), upstream:f.get('upstream'), scheme:f.get('scheme'), email:f.get('email'), ssl:f.has('ssl'), body:f.get('body'), readTimeout:f.get('readTimeout'), backendInsecure:f.has('backendInsecure')}; try { await action('/api/sites/add', body); e.target.reset(); } catch(err){ showMsg(err.message,'bad'); $('#output').textContent = err.message; } });
-document.querySelectorAll('.nav button,[data-jump]').forEach(b => b.onclick = () => { const v=b.dataset.view||b.dataset.jump; document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===v)); document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.view===v)); $('#title').textContent = ({dashboard:'概览',sites:'站点',services:'本机服务',create:'新增反代',tools:'维护'})[v] || '概览'; });
+document.querySelectorAll('.nav button,[data-jump]').forEach(b => b.onclick = () => switchView(b.dataset.view||b.dataset.jump));
 load().catch(e=>showMsg(e.message,'bad'));
 </script>
 </body>
