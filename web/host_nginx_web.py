@@ -155,6 +155,7 @@ APP_HTML = r'''<!doctype html>
       <button data-view="dashboard" class="active">概览</button>
       <button data-view="sites">站点</button>
       <button data-view="services">本机服务</button>
+      <button data-view="certs">证书</button>
       <button data-view="create">新增反代</button>
       <button data-view="tools">维护</button>
     </nav>
@@ -210,6 +211,27 @@ APP_HTML = r'''<!doctype html>
         <div style="overflow:auto"><table><thead><tr><th>地址</th><th>端口</th><th>进程</th><th>状态</th><th>建议后端</th><th>操作</th></tr></thead><tbody id="serviceRows"></tbody></table></div>
       </div>
     </section>
+    <section id="certs" class="view">
+      <div class="panel">
+        <div class="row"><h2>证书中心</h2><span class="spacer"></span><div id="certSummary" class="muted"></div></div>
+        <div class="toolbar">
+          <input id="certSearch" placeholder="搜索域名、证书状态、来源">
+          <select id="certFilter">
+            <option value="all">全部证书视图</option>
+            <option value="issues">待处理</option>
+            <option value="enabled">已启用 HTTPS</option>
+            <option value="needs_https">可启用 HTTPS</option>
+            <option value="ok">证书正常</option>
+            <option value="warn">即将到期</option>
+            <option value="missing">证书缺失</option>
+            <option value="error">证书异常</option>
+            <option value="managed">仅受管站点</option>
+          </select>
+          <button class="btn" id="certSearchClear" type="button">清空筛选</button>
+        </div>
+        <div style="overflow:auto"><table><thead><tr><th>域名</th><th>证书状态</th><th>当前配置</th><th>来源</th><th>操作</th></tr></thead><tbody id="certRows"></tbody></table></div>
+      </div>
+    </section>
     <section id="create" class="view">
       <div class="panel">
         <h2>新增标准反向代理</h2>
@@ -240,7 +262,9 @@ APP_HTML = r'''<!doctype html>
 let state = null;
 let siteQuery = '';
 let siteFilter = 'all';
-const VIEW_TITLES = {dashboard:'概览',sites:'站点',services:'本机服务',create:'新增反代',tools:'维护'};
+let certQuery = '';
+let certFilter = 'all';
+const VIEW_TITLES = {dashboard:'概览',sites:'站点',services:'本机服务',certs:'证书',create:'新增反代',tools:'维护'};
 const CERT_WARN_STATES = new Set(['warn','missing','error']);
 const $ = (s) => document.querySelector(s);
 function showMsg(text, type='info'){
@@ -286,6 +310,39 @@ function getFilteredSites(){
   const query = String(siteQuery || '').trim().toLowerCase();
   return state.sites.filter(site => siteMatchesFilter(site) && (!query || siteSearchText(site).includes(query)));
 }
+function isCertificateSite(site){
+  const domain = String(site.domain || '');
+  return domain.includes('.') && (site.kind === '反向代理' || !!site.https || site.cert_status !== 'none');
+}
+function certificateSearchText(site){
+  return [
+    site.domain,
+    Array.isArray(site.names) ? site.names.join(' ') : '',
+    site.cert_info || '',
+    site.source || '',
+    site.kind || '',
+    site.upstream || site.root || '',
+    site.readonly_reason || ''
+  ].join(' ').toLowerCase();
+}
+function certificateMatchesFilter(site){
+  switch (certFilter) {
+    case 'issues': return !site.https || CERT_WARN_STATES.has(site.cert_status);
+    case 'enabled': return !!site.https;
+    case 'needs_https': return !site.https && !!site.managed && !site.imported;
+    case 'ok': return site.cert_status === 'ok';
+    case 'warn': return site.cert_status === 'warn';
+    case 'missing': return site.cert_status === 'missing';
+    case 'error': return site.cert_status === 'error';
+    case 'managed': return !!site.managed;
+    default: return true;
+  }
+}
+function getFilteredCertificates(){
+  if(!state){ return []; }
+  const query = String(certQuery || '').trim().toLowerCase();
+  return state.sites.filter(site => isCertificateSite(site) && certificateMatchesFilter(site) && (!query || certificateSearchText(site).includes(query)));
+}
 function focusProblemSites(){
   siteFilter = 'problems';
   siteQuery = '';
@@ -314,6 +371,40 @@ function renderProblemRows(){
     return `<div class="list-item"><div class="row"><div class="title">${escapeHtml(domain)}</div><span class="spacer"></span>${tags.join(' ')}</div><div class="meta">${escapeHtml(target)}</div><div class="actions"><button class="btn small" type="button" onclick="focusSite('${jumpTarget}')">定位到站点</button></div></div>`;
   }).join('') : '<div class="muted">当前没有需要优先处理的站点。</div>';
 }
+function renderCertificateRows(){
+  const allCertificates = state.sites.filter(isCertificateSite);
+  const filteredCertificates = getFilteredCertificates();
+  $('#certSummary').textContent = `显示 ${filteredCertificates.length} / ${allCertificates.length}`;
+  const rows = filteredCertificates.map(s => {
+    const domain = s.domain || '(默认站点)';
+    const actionDomain = String(s.managed_domain || domain).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const actionSource = String(s.source || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const focusDomain = String(s.managed_domain || domain).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const names = Array.isArray(s.names) && s.names.length ? s.names.join(', ') : domain;
+    const target = s.upstream || s.root || '-';
+    const owner = s.managed ? `<span class="tag ok">${s.migrated || !s.imported ? '受管' : '已接管'}</span>` : '<span class="tag">现有</span>';
+    const statusTag = !s.https
+      ? '<span class="tag">未启用HTTPS</span>'
+      : (s.cert_status === 'ok'
+        ? `<span class="tag ok">证书${s.cert_days ?? '-'}天</span>`
+        : (s.cert_status === 'warn'
+          ? `<span class="tag warn">证书${s.cert_days ?? '-'}天</span>`
+          : '<span class="tag bad">证书异常</span>'));
+    const statusDetail = s.https ? (s.cert_info || '已启用 HTTPS') : (s.managed && !s.imported ? '可直接申请证书' : '当前仅 HTTP');
+    let actions = `<button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
+    if (s.managed && !s.imported) {
+      actions = s.https
+        ? `<button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`
+        : `<button class="btn small primary" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
+    } else if (s.importable) {
+      actions = `<button class="btn small primary" onclick="importSite('${actionDomain}', '${actionSource}')">先接管</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
+    } else if (s.imported) {
+      actions = `<button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button><span class="muted">迁移后再改证书</span>`;
+    }
+    return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${statusTag}<div class="muted">${escapeHtml(statusDetail)}</div></td><td>${owner} ${s.https ? '<span class="tag ok">HTTPS</span>' : '<span class="tag warn">HTTP</span>'}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div><div class="muted">${escapeHtml(target)}</div></td><td>${escapeHtml(s.source || '-')}${s.cert_info ? `<div class="muted">${escapeHtml(s.cert_info)}</div>` : ''}</td><td class="row">${actions}</td></tr>`;
+  }).join('');
+  $('#certRows').innerHTML = rows || '<tr><td colspan="5" class="muted">没有匹配当前筛选条件的证书站点</td></tr>';
+}
 function render(){
   $('#nginxStatus').innerHTML = `<span class="tag ${state.nginx_active==='active'?'ok':'bad'}">${escapeHtml(state.nginx_active)}</span>`;
   $('#siteCount').textContent = state.sites.length;
@@ -323,6 +414,7 @@ function render(){
   $('#certWarnCount').textContent = state.sites.filter(s => CERT_WARN_STATES.has(s.cert_status)).length;
   $('#serviceCount').textContent = state.services.length;
   renderProblemRows();
+  renderCertificateRows();
   const filteredSites = getFilteredSites();
   $('#siteSummary').textContent = `显示 ${filteredSites.length} / ${state.sites.length}`;
   const rows = filteredSites.map(s => {
@@ -379,6 +471,9 @@ $('#problemJumpBtn').onclick = ()=>focusProblemSites();
 $('#siteSearch').addEventListener('input', e => { siteQuery = e.target.value; render(); });
 $('#siteFilter').addEventListener('change', e => { siteFilter = e.target.value; render(); });
 $('#siteSearchClear').onclick = () => { siteQuery = ''; siteFilter = 'all'; $('#siteSearch').value = ''; $('#siteFilter').value = 'all'; render(); };
+$('#certSearch').addEventListener('input', e => { certQuery = e.target.value; render(); });
+$('#certFilter').addEventListener('change', e => { certFilter = e.target.value; render(); });
+$('#certSearchClear').onclick = () => { certQuery = ''; certFilter = 'all'; $('#certSearch').value = ''; $('#certFilter').value = 'all'; render(); };
 $('#createForm').addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(e.target); const body = {domain:f.get('domain'), upstream:f.get('upstream'), scheme:f.get('scheme'), email:f.get('email'), ssl:f.has('ssl'), body:f.get('body'), readTimeout:f.get('readTimeout'), backendInsecure:f.has('backendInsecure')}; try { await action('/api/sites/add', body); e.target.reset(); } catch(err){ showMsg(err.message,'bad'); $('#output').textContent = err.message; } });
 document.querySelectorAll('.nav button,[data-jump]').forEach(b => b.onclick = () => switchView(b.dataset.view||b.dataset.jump));
 load().catch(e=>showMsg(e.message,'bad'));
