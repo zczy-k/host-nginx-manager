@@ -107,7 +107,7 @@ do_upgrade() {
     section "开始升级 Host Nginx Manager"
 
     # 1. 备份配置
-    info "1/6 备份当前配置..."
+    info "1/5 备份当前配置..."
     local backup_date=$(date +%Y%m%d%H%M%S)
     if [[ -d /etc/nginx/vps-proxy-manager ]]; then
         cp -r /etc/nginx/vps-proxy-manager "/etc/nginx/vps-proxy-manager.bak.$backup_date" 2>/dev/null || true
@@ -119,26 +119,26 @@ do_upgrade() {
     fi
 
     # 2. 升级CLI脚本
-    info "2/6 升级管理脚本..."
+    info "2/5 升级管理脚本..."
     curl -fsSL "$RAW_BASE/host-nginx-manager.sh" -o "$MANAGER_BIN"
     chmod 0755 "$MANAGER_BIN"
     log "管理脚本已更新"
 
     # 3. 升级Web界面
-    info "3/6 升级Web界面..."
+    info "3/5 升级Web界面..."
     mkdir -p "$WEB_DIR"
     curl -fsSL "$RAW_BASE/web/host_nginx_web.py" -o "$WEB_DIR/host_nginx_web.py"
     chmod 0755 "$WEB_DIR/host_nginx_web.py"
     log "Web界面已更新"
 
     # 4. 重启服务
-    info "4/6 重启Web服务..."
+    info "4/5 重启Web服务..."
     systemctl daemon-reload
     systemctl restart host-nginx-manager-web.service
     log "服务已重启"
 
     # 5. 检查服务状态
-    info "5/6 检查服务状态..."
+    info "5/5 检查服务状态..."
     sleep 2
     if systemctl is-active host-nginx-manager-web.service >/dev/null 2>&1; then
         log "服务运行正常"
@@ -148,33 +148,10 @@ do_upgrade() {
         return 1
     fi
 
-    # 6. 配置自动续期
-    info "6/6 配置证书自动续期..."
-    echo ""
-    warn "提示：自动续期配置包含测试步骤，可能需要1分钟"
-    printf "是否配置证书自动续期？ [Y/n]: "
-    local setup_renew="y"
-    if [[ -n "$TTY_IN" ]]; then
-        read -r setup_renew <"$TTY_IN" 2>/dev/null || setup_renew="y"
-    fi
-
-    if [[ ! "$setup_renew" =~ ^[Nn]$ ]]; then
-        if curl -fsSL "$RAW_BASE/setup-auto-renew.sh" | bash; then
-            log "自动续期配置完成"
-        else
-            warn "自动续期配置失败，可稍后手动运行："
-            warn "  curl -fsSL $RAW_BASE/setup-auto-renew.sh | sudo bash"
-        fi
-    else
-        info "已跳过自动续期配置，可稍后手动运行："
-        info "  curl -fsSL $RAW_BASE/setup-auto-renew.sh | sudo bash"
-    fi
-
     section "升级完成！"
     echo ""
     log "✓ 所有组件已升级到最新版本"
     log "✓ 配置和密码已保留"
-    log "✓ 证书自动续期已配置"
     echo ""
 
     # 显示访问信息
@@ -190,8 +167,12 @@ do_upgrade() {
     echo "  • 证书详情查看（Web界面 → 证书 → 查看详情）"
     echo "  • 手动续期证书（证书视图 → 续期按钮）"
     echo "  • 应用内帮助（Web界面 → 帮助）"
-    echo "  • 证书自动续期（已配置certbot钩子）"
     echo "  • 失效配置清理（问题视图 → 删除失效配置）"
+    echo ""
+    info "证书自动续期说明："
+    info "  certbot 默认已配置自动续期（每天2次检查）"
+    info "  如需配置续期后自动重载nginx，运行："
+    info "  curl -fsSL $RAW_BASE/setup-auto-renew.sh | sudo bash"
     echo ""
 }
 
