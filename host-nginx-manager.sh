@@ -158,6 +158,9 @@ load_state() {
     [[ -f "$file" ]] || die "未找到站点状态文件：$file"
     # shellcheck disable=SC1090
     . "$file"
+
+    # 为旧状态文件设置默认值（兼容性）
+    AUTO_RENEW="${AUTO_RENEW:-1}"
 }
 
 save_state() {
