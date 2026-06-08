@@ -270,6 +270,20 @@ EOF
 main() {
     require_root
 
+    # 检测是否通过管道执行（无法交互）
+    if [[ ! -t 0 ]]; then
+        # 非交互模式：检测已安装则升级，未安装则安装
+        if detect_mode; then
+            section "检测到已安装版本，执行升级..."
+            do_upgrade
+        else
+            section "未检测到已安装版本，执行全新安装..."
+            install_packages
+            do_install
+        fi
+        return 0
+    fi
+
     # 如果有命令行参数，直接执行
     if [[ $# -gt 0 ]]; then
         case "$1" in
@@ -290,7 +304,7 @@ main() {
         esac
     fi
 
-    # 交互模式
+    # 交互模式（只有直接运行脚本时才会到这里）
     while true; do
         show_menu
         read -r -p "请输入选项 [1-3]: " choice
