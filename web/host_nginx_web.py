@@ -39,74 +39,93 @@ CERT_CRITICAL_DAYS = int(os.environ.get("HNG_CERT_CRITICAL_DAYS", "7"))
 
 PAGE_CSS = r'''
   <style>
-    :root { color-scheme: light; --bg:#f6f7f9; --panel:#fff; --line:#d9dee6; --text:#17202a; --muted:#667085; --blue:#1b64d8; --blue2:#eaf1ff; --red:#c62828; --green:#157347; --amber:#9a6700; --shadow:0 1px 2px rgba(16,24,40,.06); }
+    :root { color-scheme: light; --bg:#f6f7f9; --panel:#fff; --line:#e4e7eb; --text:#17202a; --muted:#667085; --blue:#1b64d8; --blue2:#eaf1ff; --red:#c62828; --green:#157347; --amber:#9a6700; --shadow:0 1px 3px rgba(16,24,40,.1), 0 1px 2px rgba(16,24,40,.06); }
     * { box-sizing: border-box; }
-    body { margin:0; font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
+    body { margin:0; font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
     button,input,select { font:inherit; }
-    .shell { min-height:100vh; display:grid; grid-template-columns:240px 1fr; }
-    aside { background:#111827; color:#d1d5db; padding:18px 14px; }
-    .brand { color:#fff; font-weight:700; font-size:17px; margin:2px 8px 22px; }
-    .nav button { width:100%; text-align:left; background:transparent; color:#d1d5db; border:0; border-radius:6px; padding:10px 12px; cursor:pointer; }
-    .nav button.active, .nav button:hover { background:#243044; color:#fff; }
-    main { padding:22px; max-width:1280px; width:100%; }
-    header { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:18px; }
-    h1 { font-size:22px; margin:0; }
-    h2 { font-size:16px; margin:0 0 12px; }
-    .muted { color:var(--muted); }
-    .grid { display:grid; gap:14px; }
-    .stats { grid-template-columns:repeat(4,minmax(150px,1fr)); margin-bottom:14px; }
-    .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); padding:16px; }
-    .stat-label { color:var(--muted); font-size:12px; margin-bottom:8px; }
-    .stat-value { font-size:18px; font-weight:700; overflow-wrap:anywhere; }
-    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .shell { min-height:100vh; display:grid; grid-template-columns:260px 1fr; }
+    aside { background:#111827; color:#d1d5db; padding:24px 0; display:flex; flex-direction:column; }
+    .brand { color:#fff; font-weight:700; font-size:18px; padding:0 24px; margin-bottom:32px; }
+    .nav { display:flex; flex-direction:column; gap:2px; padding:0 12px; }
+    .nav button { width:100%; text-align:left; background:transparent; color:#d1d5db; border:0; border-radius:8px; padding:12px 14px; cursor:pointer; transition:all 0.15s; font-size:14px; font-weight:500; }
+    .nav button.active { background:#1f2937; color:#fff; box-shadow:0 1px 2px rgba(0,0,0,0.1); }
+    .nav button:hover:not(.active) { background:#1f2937; color:#e5e7eb; }
+    main { padding:32px 40px; max-width:1400px; width:100%; }
+    header { display:flex; justify-content:space-between; align-items:flex-start; gap:20px; margin-bottom:28px; padding-bottom:24px; border-bottom:2px solid var(--line); }
+    h1 { font-size:28px; margin:0 0 4px; font-weight:700; letter-spacing:-0.02em; }
+    h2 { font-size:18px; margin:0 0 16px; font-weight:600; }
+    .muted { color:var(--muted); font-size:13px; }
+    .grid { display:grid; gap:20px; }
+    .stats { grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); margin-bottom:24px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); padding:24px; }
+    .stat-label { color:var(--muted); font-size:13px; margin-bottom:10px; font-weight:500; text-transform:uppercase; letter-spacing:0.03em; }
+    .stat-value { font-size:24px; font-weight:700; overflow-wrap:anywhere; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
     .spacer { flex:1; }
-    .btn { border:1px solid var(--line); background:#fff; color:var(--text); border-radius:6px; padding:8px 11px; cursor:pointer; min-height:36px; }
-    .btn:hover { border-color:#b8c1cf; background:#f9fafb; }
+    .btn { border:1px solid var(--line); background:#fff; color:var(--text); border-radius:8px; padding:10px 16px; cursor:pointer; min-height:40px; font-weight:500; transition:all 0.15s; }
+    .btn:hover { border-color:#b8c1cf; background:#f9fafb; transform:translateY(-1px); box-shadow:0 2px 4px rgba(0,0,0,0.08); }
     .btn.primary { background:var(--blue); border-color:var(--blue); color:#fff; }
-    .btn.danger { border-color:#f0b6b6; color:var(--red); }
-    .btn.small { padding:5px 8px; min-height:30px; }
-    .tag { display:inline-flex; align-items:center; height:24px; padding:0 8px; border-radius:999px; background:#eef2f7; color:#344054; font-size:12px; }
-    .tag.ok { background:#e8f5ee; color:var(--green); }
-    .tag.warn { background:#fff4db; color:var(--amber); }
-    .tag.bad { background:#fdecec; color:var(--red); }
+    .btn.primary:hover { background:#1557c0; border-color:#1557c0; }
+    .btn.danger { background:#fff; border-color:#f0b6b6; color:var(--red); }
+    .btn.danger:hover { background:#fef5f5; border-color:#e09090; }
+    .btn.small { padding:6px 12px; min-height:32px; font-size:13px; }
+    .tag { display:inline-flex; align-items:center; height:26px; padding:0 10px; border-radius:6px; background:#f1f3f5; color:#495057; font-size:12px; font-weight:600; white-space:nowrap; }
+    .tag.ok { background:#d4f4dd; color:#0f5132; }
+    .tag.warn { background:#fff4db; color:#664d03; }
+    .tag.bad { background:#fee; color:#c62828; }
     table { width:100%; border-collapse:collapse; }
-    th,td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:middle; }
-    th { color:var(--muted); font-size:12px; font-weight:600; background:#fbfcfd; }
+    th,td { text-align:left; padding:14px 12px; border-bottom:1px solid var(--line); vertical-align:middle; }
+    th { color:var(--muted); font-size:12px; font-weight:700; background:#f8f9fa; text-transform:uppercase; letter-spacing:0.03em; }
     td { overflow-wrap:anywhere; }
-    form { display:grid; gap:12px; }
-    .form-grid { display:grid; grid-template-columns:repeat(2,minmax(220px,1fr)); gap:12px; }
-    label { display:grid; gap:6px; color:#344054; font-weight:600; }
-    input,select { border:1px solid var(--line); border-radius:6px; padding:9px 10px; background:#fff; min-height:38px; }
-    input[type=checkbox] { min-height:auto; width:16px; height:16px; }
-    .check { display:flex; align-items:center; gap:8px; font-weight:500; }
+    td:first-child { font-weight:500; }
+    tbody tr:hover { background:#f8f9fb; }
+    form { display:grid; gap:16px; }
+    .form-grid { display:grid; grid-template-columns:repeat(2,minmax(240px,1fr)); gap:16px; }
+    label { display:grid; gap:8px; color:#344054; font-weight:600; font-size:13px; }
+    input,select { border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:#fff; min-height:42px; transition:border-color 0.15s; }
+    input:focus,select:focus { outline:0; border-color:var(--blue); box-shadow:0 0 0 3px var(--blue2); }
+    input[type=checkbox] { min-height:auto; width:18px; height:18px; cursor:pointer; }
+    .check { display:flex; align-items:center; gap:10px; font-weight:500; cursor:pointer; }
     .view { display:none; }
     .view.active { display:block; }
-    pre { margin:0; white-space:pre-wrap; background:#101828; color:#e5e7eb; padding:12px; border-radius:8px; max-height:360px; overflow:auto; }
-    .notice { border-left:3px solid var(--blue); background:var(--blue2); padding:10px 12px; border-radius:6px; color:#173b70; }
-    .dashboard-grid { grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr); }
-    .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:12px 0 14px; }
-    .toolbar input { flex:1 1 280px; }
-    .toolbar select { width:min(220px,100%); }
-    .list { display:grid; gap:10px; }
-    .list-item { border:1px solid var(--line); border-radius:6px; padding:12px; background:#fff; }
-    .list-item .title { font-weight:700; }
-    .list-item .meta { color:var(--muted); font-size:12px; margin-top:4px; }
-    .list-item .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
-    .login { min-height:100vh; display:grid; place-items:center; padding:24px; }
-    .login .panel { width:min(420px,100%); }
+    pre { margin:0; white-space:pre-wrap; background:#1e293b; color:#e2e8f0; padding:16px; border-radius:8px; max-height:400px; overflow:auto; font-size:13px; line-height:1.6; }
+    .notice { border-left:4px solid var(--blue); background:var(--blue2); padding:14px 16px; border-radius:8px; color:#1e3a8a; line-height:1.6; }
+    .dashboard-grid { grid-template-columns:minmax(0,1.2fr) minmax(360px,0.8fr); }
+    .toolbar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:16px 0 20px; padding:16px; background:#f8f9fa; border-radius:8px; border:1px solid var(--line); }
+    .toolbar input { flex:1 1 300px; }
+    .toolbar select { width:min(240px,100%); }
+    .list { display:grid; gap:12px; }
+    .list-item { border:1px solid var(--line); border-radius:8px; padding:16px; background:#fff; transition:box-shadow 0.15s; }
+    .list-item:hover { box-shadow:0 2px 8px rgba(0,0,0,0.08); }
+    .list-item .title { font-weight:600; font-size:15px; }
+    .list-item .meta { color:var(--muted); font-size:12px; margin-top:6px; }
+    .list-item .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+    .login { min-height:100vh; display:grid; place-items:center; padding:24px; background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+    .login .panel { width:min(440px,100%); box-shadow:0 20px 60px rgba(0,0,0,0.3); }
     .login-message { margin:12px 0; }
-    details { margin:12px 0; }
-    summary { cursor:pointer; padding:10px; background:#f6f7f9; border-radius:6px; font-weight:600; user-select:none; }
-    details[open] summary { margin-bottom:12px; }
+    details { margin:16px 0; }
+    summary { cursor:pointer; padding:12px 14px; background:#f8f9fa; border-radius:8px; font-weight:600; user-select:none; border:1px solid var(--line); }
+    summary:hover { background:#e9ecef; }
+    details[open] summary { margin-bottom:16px; }
     .help-content { line-height:1.7; }
-    .help-content h3 { margin:18px 0 10px; font-size:15px; }
-    .help-content code { background:#f1f3f5; padding:2px 6px; border-radius:3px; font-size:13px; }
-    .help-content pre { background:#101828; color:#e5e7eb; padding:12px; border-radius:6px; overflow:auto; }
-    .modal-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center; }
+    .help-content h3 { margin:20px 0 12px; font-size:16px; font-weight:600; }
+    .help-content code { background:#f1f3f5; padding:3px 7px; border-radius:4px; font-size:13px; color:#c7254e; }
+    .help-content pre { background:#1e293b; color:#e2e8f0; padding:16px; border-radius:8px; overflow:auto; }
+    .modal-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center; }
     .modal-overlay.active { display:flex; }
-    .modal { background:#fff; border-radius:8px; max-width:90vw; max-height:90vh; overflow:auto; box-shadow:0 10px 40px rgba(0,0,0,0.2); }
-    .modal-header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
-    .modal-body { padding:20px; }
+    .modal { background:#fff; border-radius:12px; max-width:90vw; max-height:90vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,0.3); }
+    .modal-header { padding:20px 24px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
+    .modal-header h3 { margin:0; font-size:20px; font-weight:600; }
+    .modal-body { padding:24px; }
+    .domain-col { max-width:280px; }
+    .domain-col strong { font-size:15px; color:#111827; }
+    .domain-col .muted { font-size:12px; margin-top:2px; display:block; }
+    .type-col { min-width:160px; }
+    .type-col .tag { margin-right:4px; margin-bottom:4px; }
+    .source-col { max-width:300px; font-size:13px; color:var(--muted); }
+    .actions-col { min-width:200px; white-space:nowrap; }
+  </style>
+'''
     .modal-close { cursor:pointer; font-size:24px; color:var(--muted); }
     .cert-detail-grid { display:grid; gap:12px; }
     .cert-detail-row { display:grid; grid-template-columns:140px 1fr; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); }
@@ -231,7 +250,7 @@ APP_HTML = r'''<!doctype html>
           </select>
           <button class="btn" id="siteSearchClear" type="button">清空筛选</button>
         </div>
-        <div style="overflow:auto"><table><thead><tr><th>域名</th><th>监听</th><th>类型</th><th>目标/目录</th><th>来源</th><th>操作</th></tr></thead><tbody id="siteRows"></tbody></table></div>
+        <div style="overflow:auto"><table><thead><tr><th class="domain-col">域名</th><th>监听</th><th class="type-col">类型与状态</th><th>目标/目录</th><th class="source-col">来源</th><th class="actions-col">操作</th></tr></thead><tbody id="siteRows"></tbody></table></div>
       </div>
     </section>
     <section id="services" class="view">
@@ -731,17 +750,24 @@ function render(){
     const names = Array.isArray(s.names) && s.names.length ? s.names.join(', ') : domain;
     const listen = Array.isArray(s.listen) && s.listen.length ? s.listen.join(', ') : '-';
     const target = s.upstream || s.root || '-';
-    const owner = s.managed ? `<span class="tag ok">${s.migrated || !s.imported ? '受管' : '已接管'}</span>` : '<span class="tag">已有</span>';
+
+    // 状态标签
+    const owner = s.managed ? `<span class="tag ok">${s.migrated || !s.imported ? '受管' : '已接管'}</span>` : '<span class="tag">现有</span>';
     const https = s.https ? '<span class="tag ok">HTTPS</span>' : '<span class="tag warn">HTTP</span>';
     const backendTag = s.backend_status === 'ok' ? '<span class="tag ok">后端正常</span>' : (s.backend_status === 'bad' ? '<span class="tag bad">后端异常</span>' : '');
     const certTag = s.cert_status === 'ok'
-      ? `<span class="tag ok">证书${s.cert_days ?? '-'}天</span>`
+      ? `<span class="tag ok">证书${s.cert_days}天</span>`
       : (s.cert_status === 'warn'
-        ? `<span class="tag warn">证书${s.cert_days ?? '-'}天</span>`
+        ? `<span class="tag warn">证书${s.cert_days}天</span>`
         : (s.cert_status === 'critical'
-          ? `<span class="tag bad">证书${s.cert_days ?? '-'}天</span>`
+          ? `<span class="tag bad">证书${s.cert_days}天</span>`
           : (s.cert_status === 'missing' || s.cert_status === 'error' ? '<span class="tag bad">证书异常</span>' : '')));
     const dnsTag = dnsTagHtml(s);
+
+    // 组合所有状态标签
+    const statusTags = [owner, https, backendTag, certTag, dnsTag].filter(t => t).join(' ');
+    const kindInfo = s.kind || 'Nginx 服务';
+
     let actions = '<span class="muted">只读</span>';
     if (s.migrated) {
       actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small danger" onclick="removeImportedSite('${actionDomain}')">删除</button>`;
@@ -754,7 +780,15 @@ function render(){
     } else if (s.readonly_reason) {
       actions = `<span class="muted">${escapeHtml(s.readonly_reason)}</span>`;
     }
-    return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${escapeHtml(listen)}</td><td>${owner} ${https} ${backendTag} ${certTag} ${dnsTag}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div></td><td>${escapeHtml(target)}${s.backend_detail ? `<div class="muted">${escapeHtml(s.backend_detail)}</div>` : ''}</td><td>${escapeHtml(s.source || '-')}${s.cert_info ? `<div class="muted">${escapeHtml(s.cert_info)}</div>` : ''}${s.dns_detail ? `<div class="muted">DNS: ${escapeHtml(s.dns_detail)}</div>` : ''}</td><td class="row">${actions}</td></tr>`;
+
+    return `<tr>
+      <td class="domain-col"><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td>
+      <td>${escapeHtml(listen)}</td>
+      <td class="type-col">${statusTags}<div class="muted" style="margin-top:6px;">${escapeHtml(kindInfo)}</div></td>
+      <td>${escapeHtml(target)}${s.backend_detail ? `<div class="muted">${escapeHtml(s.backend_detail)}</div>` : ''}</td>
+      <td class="source-col">${escapeHtml(s.source || '-')}${s.cert_info ? `<div class="muted">${escapeHtml(s.cert_info)}</div>` : ''}${s.dns_detail ? `<div class="muted">DNS: ${escapeHtml(s.dns_detail)}</div>` : ''}</td>
+      <td class="actions-col">${actions}</td>
+    </tr>`;
   }).join('');
   $('#siteRows').innerHTML = rows || '<tr><td colspan="6" class="muted">没有匹配当前筛选条件的站点</td></tr>';
   const serviceRows = state.services.map(s => {
