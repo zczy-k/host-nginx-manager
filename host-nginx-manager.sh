@@ -30,6 +30,7 @@ WEBSOCKET=1
 ENABLE_SSL=1
 CERTBOT_EMAIL=""
 BACKEND_INSECURE=0
+AUTO_RENEW=1
 DOMAIN=""
 UPSTREAM=""
 
@@ -50,6 +51,7 @@ $APP_LABEL v$SCRIPT_VERSION
   host-nginx-manager.sh enable-ssl DOMAIN [--email EMAIL]
   host-nginx-manager.sh renew DOMAIN
   host-nginx-manager.sh disable-ssl DOMAIN
+  host-nginx-manager.sh set-auto-renew DOMAIN [0|1]
   host-nginx-manager.sh remove DOMAIN [--yes] [--delete-cert]
   host-nginx-manager.sh list
   host-nginx-manager.sh show DOMAIN
@@ -79,6 +81,8 @@ $APP_LABEL v$SCRIPT_VERSION
   host-nginx-manager.sh add metapi.cni.de5.net 127.0.0.1:3001 --upstream-scheme http --no-ssl
   host-nginx-manager.sh enable-ssl metapi.cni.de5.net --email you@example.com
   host-nginx-manager.sh renew metapi.cni.de5.net
+  host-nginx-manager.sh set-auto-renew metapi.cni.de5.net 1
+  host-nginx-manager.sh set-auto-renew metapi.cni.de5.net 0
   host-nginx-manager.sh remove api.example.com --delete-cert --yes
 EOF
 }
@@ -170,6 +174,7 @@ PROXY_READ_TIMEOUT=$PROXY_READ_TIMEOUT
 PROXY_SEND_TIMEOUT=$PROXY_SEND_TIMEOUT
 WEBSOCKET=$WEBSOCKET
 BACKEND_INSECURE=$BACKEND_INSECURE
+AUTO_RENEW=$AUTO_RENEW
 EOF
     chmod 600 "$file"
 }
@@ -569,6 +574,22 @@ cmd_reload() {
     log "nginx 已重载"
 }
 
+cmd_set_auto_renew() {
+    DOMAIN="$(normalize_domain "${1:-}")"
+    validate_domain "$DOMAIN" || die "无效域名：$DOMAIN"
+    local enable="${2:-1}"
+
+    load_state "$DOMAIN"
+    AUTO_RENEW="$enable"
+    save_state
+
+    if [[ "$enable" == "1" ]]; then
+        log "已启用自动续期：$DOMAIN"
+    else
+        log "已禁用自动续期：$DOMAIN"
+    fi
+}
+
 main() {
     case "$COMMAND" in
         help|-h|--help)
@@ -619,6 +640,10 @@ main() {
             ;;
         reload)
             cmd_reload
+            ;;
+        set-auto-renew)
+            [[ $# -ge 1 ]] || die "用法：set-auto-renew DOMAIN [0|1]"
+            cmd_set_auto_renew "$@"
             ;;
 
         *)

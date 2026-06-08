@@ -258,7 +258,7 @@ APP_HTML = r'''<!doctype html>
           </select>
           <button class="btn" id="certSearchClear" type="button">清空筛选</button>
         </div>
-        <div style="overflow:auto"><table><thead><tr><th>域名</th><th>证书状态</th><th>当前配置</th><th>来源</th><th>操作</th></tr></thead><tbody id="certRows"></tbody></table></div>
+        <div style="overflow:auto"><table><thead><tr><th>域名</th><th>证书状态</th><th>自动续期</th><th>当前配置</th><th>来源</th><th>操作</th></tr></thead><tbody id="certRows"></tbody></table></div>
       </div>
     </section>
     <section id="create" class="view">
@@ -683,6 +683,15 @@ function renderCertificateRows(){
             ? `<span class="tag bad">证书${s.cert_days ?? '-'}天</span>`
             : '<span class="tag bad">证书异常</span>')));
     const statusDetail = (s.https ? (s.cert_info || '已启用 HTTPS') : (s.managed && !s.imported ? '可直接申请证书' : '当前仅 HTTP')) + (s.dns_detail ? ` | DNS: ${s.dns_detail}` : '');
+
+    // 自动续期开关
+    let autoRenewToggle = '-';
+    if (s.managed && !s.imported && s.https) {
+      const checked = s.auto_renew ? 'checked' : '';
+      const labelClass = s.auto_renew ? 'ok' : 'muted';
+      autoRenewToggle = `<label style="display:inline-flex;align-items:center;cursor:pointer;user-select:none;"><input type="checkbox" ${checked} onchange="setAutoRenew('${actionDomain}', this.checked)" style="margin-right:6px;"><span class="${labelClass}">${s.auto_renew ? '已启用' : '已禁用'}</span></label>`;
+    }
+
     let actions = `<button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
     if (s.managed && !s.imported) {
       actions = s.https
@@ -693,9 +702,9 @@ function renderCertificateRows(){
     } else if (s.imported) {
       actions = `<button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button><span class="muted">迁移后再改证书</span>`;
     }
-    return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${statusTag}<div class="muted">${escapeHtml(statusDetail)}</div></td><td>${owner} ${s.https ? '<span class="tag ok">HTTPS</span>' : '<span class="tag warn">HTTP</span>'} ${dnsTag}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div><div class="muted">${escapeHtml(target)}</div></td><td>${escapeHtml(s.source || '-')}${s.cert_info ? `<div class="muted">${escapeHtml(s.cert_info)}</div>` : ''}${s.dns_detail ? `<div class="muted">DNS: ${escapeHtml(s.dns_detail)}</div>` : ''}</td><td class="row">${actions}</td></tr>`;
+    return `<tr><td><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td><td>${statusTag}<div class="muted">${escapeHtml(statusDetail)}</div></td><td>${autoRenewToggle}</td><td>${owner} ${s.https ? '<span class="tag ok">HTTPS</span>' : '<span class="tag warn">HTTP</span>'} ${dnsTag}<div class="muted">${escapeHtml(s.kind || 'Nginx 服务')}</div><div class="muted">${escapeHtml(target)}</div></td><td>${escapeHtml(s.source || '-')}${s.cert_info ? `<div class="muted">${escapeHtml(s.cert_info)}</div>` : ''}${s.dns_detail ? `<div class="muted">DNS: ${escapeHtml(s.dns_detail)}</div>` : ''}</td><td class="row">${actions}</td></tr>`;
   }).join('');
-  $('#certRows').innerHTML = rows || '<tr><td colspan="5" class="muted">没有匹配当前筛选条件的证书站点</td></tr>';
+  $('#certRows').innerHTML = rows || '<tr><td colspan="6" class="muted">没有匹配当前筛选条件的证书站点</td></tr>';
 }
 function render(){
   $('#nginxStatus').innerHTML = `<span class="tag ${state.nginx_active==='active'?'ok':'bad'}">${escapeHtml(state.nginx_active)}</span>`;
@@ -761,6 +770,13 @@ async function removeImportedSite(domain){ if(confirm('确认删除这个导入/
 async function importSite(domain, source){ if(confirm('确认导入这个已有反向代理站点？导入不会删除原 nginx 配置。')) await action('/api/sites/import',{domain, source}); }
 async function migrateSite(domain){ if(confirm('确认将这个已接管站点迁移为工具受管配置？会备份并注释原始配置块。')) await action('/api/sites/migrate',{domain}); }
 async function renewCert(domain){ if(confirm('确认续期该域名的证书？\n\n这将重新向 Let\'s Encrypt 申请证书，通常在证书即将过期时使用。')) await action('/api/certs/renew',{domain}); }
+async function setAutoRenew(domain, enable) {
+  try {
+    await action('/api/certs/set-auto-renew', {domain, enable});
+  } catch(err) {
+    showMsg(err.message, 'bad');
+  }
+}
 async function viewCert(domain){
   try {
     const data = await api('/api/certs/detail?domain=' + encodeURIComponent(domain));
@@ -1189,6 +1205,7 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
         "upstream_scheme": upstream_scheme,
         "upstream_target": upstream_target,
         "ssl_cert_path": ssl_cert_path,
+        "auto_renew": managed_state.get("AUTO_RENEW", "1") == "1",
     }
 
 
@@ -1816,6 +1833,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/certs/renew":
             result = run_cmd([MANAGER_BIN, "renew", domain], timeout=180)
             self.send_json({"message": "证书续期完成", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/certs/set-auto-renew":
+            enable = "1" if data.get("enable", True) else "0"
+            result = run_cmd([MANAGER_BIN, "set-auto-renew", domain, enable], timeout=30)
+            self.send_json({"message": "自动续期设置已更新", **result}, 200 if result["code"] == 0 else 500)
             return
 
         self.send_error(404)
