@@ -534,6 +534,17 @@ cmd_enable_ssl() {
     # 检查证书是否已存在
     if [[ -d "/etc/letsencrypt/live/$DOMAIN" ]]; then
         info "检测到现有证书，将直接复用"
+
+        # 修复续期配置文件中的 webroot_path（如果存在）
+        local renewal_conf="/etc/letsencrypt/renewal/${DOMAIN}.conf"
+        if [[ -f "$renewal_conf" ]]; then
+            info "检查并修复续期配置..."
+            # 替换错误的 webroot_path
+            sed -i "s|^webroot_path = /var/www/.*|webroot_path = $ACME_ROOT|g" "$renewal_conf" 2>/dev/null || true
+            # 替换 webroot_map 中的路径
+            sed -i "s|^${DOMAIN} = /var/www/.*|${DOMAIN} = $ACME_ROOT|g" "$renewal_conf" 2>/dev/null || true
+            log "续期配置已更新"
+        fi
     else
         section "申请 Let's Encrypt 证书"
         issue_cert || die "certbot 证书申请失败"
