@@ -1128,6 +1128,24 @@ def list_local_services() -> list[dict[str, object]]:
     if result["code"] != 0:
         return []
 
+    # 排除的端口：nginx、管理界面、系统服务
+    EXCLUDED_PORTS = {
+        22,    # SSH
+        53,    # DNS (systemd-resolved)
+        80,    # HTTP (nginx)
+        443,   # HTTPS (nginx)
+        8098,  # 管理界面
+    }
+
+    # 排除的进程：系统服务
+    EXCLUDED_PROCESSES = {
+        "systemd-resolve",
+        "systemd-network",
+        "dnsmasq",
+        "sshd",
+        "nginx",
+    }
+
     services: list[dict[str, object]] = []
     seen: set[tuple[str, int, str]] = set()
     for line in str(result["output"]).splitlines():
@@ -1136,20 +1154,36 @@ def list_local_services() -> list[dict[str, object]]:
             continue
         local_addr = parts[3]
         process_info = parts[5] if len(parts) > 5 else ""
+
+        # 解析地址和端口
         if local_addr.startswith("["):
             host, _, port_text = local_addr.rpartition(":")
             host = host.strip("[]")
         else:
             host, _, port_text = local_addr.rpartition(":")
+
         if not port_text.isdigit():
             continue
         port = int(port_text)
-        if port in {80, 443, 8098}:
+
+        # 过滤系统端口
+        if port in EXCLUDED_PORTS:
             continue
+
         proc_match = re.search(r'\("([^\"]+)"', process_info)
         process = proc_match.group(1) if proc_match else (process_info or "unknown")
+
+        # 过滤系统进程
+        if process in EXCLUDED_PROCESSES:
+            continue
+
         exposed = host in {"*", "0.0.0.0", "::"}
         normalized_host = "127.0.0.1" if host in {"*", "0.0.0.0", "::", "::1", "[::]"} else host
+
+        # 过滤特殊地址（如127.0.0.53%lo）
+        if "127.0.0.53" in normalized_host or "%" in normalized_host:
+            continue
+
         key = (normalized_host, port, process)
         if key in seen:
             continue
