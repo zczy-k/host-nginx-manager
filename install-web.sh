@@ -16,11 +16,16 @@ PORT="${HNG_WEB_PORT:-8098}"
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m'
 
 log() { printf "%b[OK]%b %s\n" "$GREEN" "$NC" "$*"; }
 warn() { printf "%b[! ]%b %s\n" "$YELLOW" "$NC" "$*"; }
 die() { printf "%b[x ]%b %s\n" "$RED" "$NC" "$*"; exit 1; }
+info() { printf "%b[i ]%b %s\n" "$BLUE" "$NC" "$*"; }
+section() { printf "\n%b%s%b\n" "$BOLD$CYAN" "$*" "$NC"; }
 
 require_root() {
     [[ ${EUID:-$(id -u)} -eq 0 ]] || die "请使用 root 身份运行安装脚本"
@@ -49,15 +54,145 @@ print(secrets.token_urlsafe(32))
 PY
 }
 
-main() {
-    require_root
+detect_mode() {
+    if [[ -f "$ENV_FILE" ]] && [[ -f "$SERVICE_FILE" ]]; then
+        return 0  # 已安装
+    else
+        return 1  # 未安装
+    fi
+}
+
+show_menu() {
+    clear
+    cat <<EOF
+$BOLD$CYAN
+╔════════════════════════════════════════════════╗
+║     Host Nginx Manager - 安装/升级工具        ║
+╚════════════════════════════════════════════════╝
+$NC
+EOF
+
+    if detect_mode; then
+        section "检测到已安装的版本"
+        if [[ -f "$ENV_FILE" ]]; then
+            # shellcheck disable=SC1090
+            . "$ENV_FILE" 2>/dev/null || true
+            info "安装目录: $INSTALL_DIR"
+            info "管理地址: http://${HNG_WEB_BIND:-未知}:${HNG_WEB_PORT:-未知}"
+        fi
+        if systemctl is-active host-nginx-manager-web.service >/dev/null 2>&1; then
+            printf "%b[✓]%b 服务状态: 运行中\n" "$GREEN" "$NC"
+        else
+            printf "%b[x]%b 服务状态: 已停止\n" "$RED" "$NC"
+        fi
+
+        echo ""
+        echo "请选择操作："
+        echo "  1) 升级到最新版本（保留配置和密码）"
+        echo "  2) 全新安装（重置所有配置）"
+        echo "  3) 退出"
+        echo ""
+    else
+        section "未检测到已安装的版本"
+        echo ""
+        echo "请选择操作："
+        echo "  1) 全新安装"
+        echo "  2) 退出"
+        echo ""
+    fi
+}
+
+do_upgrade() {
+    section "开始升级 Host Nginx Manager"
+
+    # 1. 备份配置
+    info "1/6 备份当前配置..."
+    local backup_date=$(date +%Y%m%d%H%M%S)
+    if [[ -d /etc/nginx/vps-proxy-manager ]]; then
+        cp -r /etc/nginx/vps-proxy-manager "/etc/nginx/vps-proxy-manager.bak.$backup_date" 2>/dev/null || true
+        log "已备份站点配置"
+    fi
+    if [[ -f "$ENV_FILE" ]]; then
+        cp "$ENV_FILE" "$ENV_FILE.bak.$backup_date"
+        log "已备份环境配置"
+    fi
+
+    # 2. 升级CLI脚本
+    info "2/6 升级管理脚本..."
+    curl -fsSL "$RAW_BASE/host-nginx-manager.sh" -o "$MANAGER_BIN"
+    chmod 0755 "$MANAGER_BIN"
+    log "管理脚本已更新"
+
+    # 3. 升级Web界面
+    info "3/6 升级Web界面..."
+    mkdir -p "$WEB_DIR"
+    curl -fsSL "$RAW_BASE/web/host_nginx_web.py" -o "$WEB_DIR/host_nginx_web.py"
+    chmod 0755 "$WEB_DIR/host_nginx_web.py"
+    log "Web界面已更新"
+
+    # 4. 重启服务
+    info "4/6 重启Web服务..."
+    systemctl daemon-reload
+    systemctl restart host-nginx-manager-web.service
+    log "服务已重启"
+
+    # 5. 检查服务状态
+    info "5/6 检查服务状态..."
+    sleep 2
+    if systemctl is-active host-nginx-manager-web.service >/dev/null 2>&1; then
+        log "服务运行正常"
+    else
+        warn "服务启动异常，查看日志："
+        systemctl status host-nginx-manager-web.service --no-pager -l
+        return 1
+    fi
+
+    # 6. 配置自动续期
+    info "6/6 配置证书自动续期..."
+    if curl -fsSL "$RAW_BASE/setup-auto-renew.sh" | bash; then
+        log "自动续期配置完成"
+    else
+        warn "自动续期配置失败，可稍后手动运行"
+    fi
+
+    section "升级完成！"
+    echo ""
+    log "✓ 所有组件已升级到最新版本"
+    log "✓ 配置和密码已保留"
+    log "✓ 证书自动续期已配置"
+    echo ""
+
+    # 显示访问信息
+    if [[ -f "$ENV_FILE" ]]; then
+        # shellcheck disable=SC1090
+        . "$ENV_FILE"
+        info "管理地址: http://${HNG_WEB_BIND}:${HNG_WEB_PORT}"
+        info "管理密码: $HNG_WEB_PASSWORD"
+    fi
+
+    echo ""
+    printf "%b新功能：%b\n" "$BOLD" "$NC"
+    echo "  • 证书详情查看（Web界面 → 证书 → 查看详情）"
+    echo "  • 手动续期证书（证书视图 → 续期按钮）"
+    echo "  • 应用内帮助（Web界面 → 帮助）"
+    echo "  • 证书自动续期（已配置certbot钩子）"
+    echo "  • 失效配置清理（问题视图 → 删除失效配置）"
+    echo ""
+}
+
+do_install() {
+    section "开始安装 Host Nginx Manager"
+
     install_packages
 
+    info "创建安装目录..."
     mkdir -p "$WEB_DIR" "$ENV_DIR"
 
+    info "下载管理脚本..."
     curl -fsSL "$RAW_BASE/host-nginx-manager.sh" -o "$MANAGER_BIN"
     chmod 0755 "$MANAGER_BIN"
 
+    info "下载Web界面..."
     curl -fsSL "$RAW_BASE/web/host_nginx_web.py" -o "$WEB_DIR/host_nginx_web.py"
     chmod 0755 "$WEB_DIR/host_nginx_web.py"
 
@@ -74,6 +209,7 @@ main() {
     password="${password:-$(generate_secret)}"
     secret="${secret:-$(generate_secret)}"
 
+    info "生成配置文件..."
     cat > "$ENV_FILE" <<EOF
 HNG_MANAGER_BIN=$MANAGER_BIN
 HNG_WEB_BIND=$BIND_ADDR
@@ -83,6 +219,7 @@ HNG_WEB_SECRET=$secret
 EOF
     chmod 0600 "$ENV_FILE"
 
+    info "创建系统服务..."
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Host Nginx Manager Web UI
@@ -108,10 +245,13 @@ ReadWritePaths=/etc/nginx /etc/letsencrypt /var/lib/letsencrypt /var/log/letsenc
 WantedBy=multi-user.target
 EOF
 
+    info "启动服务..."
     systemctl daemon-reload
     systemctl enable host-nginx-manager-web.service >/dev/null
     systemctl restart host-nginx-manager-web.service
 
+    section "安装完成！"
+    echo ""
     log "Host Nginx Manager Web UI 已安装"
     printf '\n管理地址: http://%s:%s\n' "$BIND_ADDR" "$PORT"
     printf '管理密码: %s\n' "$password"
@@ -124,6 +264,73 @@ EOF
         warn "Web 面板已监听公网地址，请确认云安全组/防火墙仅向可信 IP 放行 $PORT 端口。"
     fi
     warn "请妥善保存管理密码。密码保存在 $ENV_FILE"
+    echo ""
+}
+
+main() {
+    require_root
+
+    # 如果有命令行参数，直接执行
+    if [[ $# -gt 0 ]]; then
+        case "$1" in
+            --upgrade)
+                do_upgrade
+                return 0
+                ;;
+            --install)
+                install_packages
+                do_install
+                return 0
+                ;;
+            *)
+                echo "未知参数: $1"
+                echo "用法: $0 [--install|--upgrade]"
+                exit 1
+                ;;
+        esac
+    fi
+
+    # 交互模式
+    while true; do
+        show_menu
+        read -r -p "请输入选项 [1-3]: " choice
+
+        case "$choice" in
+            1)
+                if detect_mode; then
+                    do_upgrade
+                else
+                    install_packages
+                    do_install
+                fi
+                echo ""
+                read -r -p "按回车键继续..."
+                ;;
+            2)
+                if detect_mode; then
+                    echo ""
+                    warn "警告：这将重置所有配置和密码！"
+                    read -r -p "确认要全新安装吗？ [y/N]: " confirm
+                    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                        install_packages
+                        do_install
+                    fi
+                else
+                    exit 0
+                fi
+                echo ""
+                read -r -p "按回车键继续..."
+                ;;
+            3)
+                echo "退出安装程序"
+                exit 0
+                ;;
+            *)
+                warn "无效的选项，请重新选择"
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 main "$@"
