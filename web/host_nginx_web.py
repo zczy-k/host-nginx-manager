@@ -2447,40 +2447,30 @@ def verify_certificate_permissions() -> dict[str, object]:
 def check_legacy_sites() -> dict[str, object]:
     """检查使用旧配置的站点"""
     try:
-        servers = list_nginx_servers()
+        # 只检查受管站点的状态文件
+        managed_sites = list_managed_sites()
         legacy_sites = []
-        seen_domains = set()  # 防止重复
 
-        for server in servers:
-            if not server.get("managed"):
+        for site_state in managed_sites:
+            domain = site_state.get("DOMAIN", "")
+            if not domain:
                 continue
 
-            domain = server.get("managed_domain") or server.get("domain")
-            if not domain or domain in seen_domains:
-                continue  # 跳过已处理的域名
+            # 已经迁移过的，跳过
+            if site_state.get("MIGRATED") == "1":
+                continue
 
-            source = server.get("source", "")
-
-            # 判断是否为旧配置
-            issues = []
-
-            # 1. 检查配置文件名是否为标准格式
-            if source and not source.startswith("/etc/nginx/sites-available/vpspm-"):
-                issues.append("配置文件不是标准格式")
-            elif not source:
-                continue  # 没有配置文件，跳过
-
-            # 2. 检查是否为接管但未迁移的站点
-            managed_sites = list_managed_sites()
-            site_state = next((s for s in managed_sites if s.get("DOMAIN") == domain), {})
+            # 检查是否为接管但未迁移的站点
             if site_state.get("IMPORTED") == "1" and site_state.get("MIGRATED") != "1":
-                issues.append("已接管但未迁移到标准配置")
+                # 查找原始配置文件
+                imported_source = site_state.get("IMPORTED_SOURCE", "")
 
-            # 3. 检查配置文件内容（只有非标准配置文件才检查）
-            if source and not source.startswith("/etc/nginx/sites-available/vpspm-"):
-                if pathlib.Path(source).exists():
+                issues = ["已接管但未迁移到标准配置"]
+
+                # 检查原始配置文件
+                if imported_source and pathlib.Path(imported_source).exists():
                     try:
-                        content = pathlib.Path(source).read_text(encoding="utf-8", errors="ignore")
+                        content = pathlib.Path(imported_source).read_text(encoding="utf-8", errors="ignore")
                         if "if ($host =" in content or "if($host=" in content:
                             issues.append("使用了 if 条件判断（Certbot风格）")
                         if "managed by Certbot" in content:
@@ -2488,12 +2478,9 @@ def check_legacy_sites() -> dict[str, object]:
                     except Exception:
                         pass
 
-            # 只有真正有问题的才加入列表
-            if issues:
-                seen_domains.add(domain)
                 legacy_sites.append({
                     "domain": domain,
-                    "source": source,
+                    "source": imported_source or f"未知（状态文件：{domain}.env）",
                     "issues": issues
                 })
 
@@ -2529,7 +2516,7 @@ def migrate_legacy_sites() -> dict[str, object]:
                 "success": True,
                 "migrated": 0,
                 "failed": 0,
-                "output": "没有需要迁移的站点"
+                "output": "✓ 所有站点均使用标准配置，无需迁移"
             }
 
         output_lines.append(f"发现 {len(legacy_sites)} 个需要迁移的站点\n")
@@ -2539,47 +2526,48 @@ def migrate_legacy_sites() -> dict[str, object]:
             source = site["source"]
 
             output_lines.append(f"正在迁移: {domain}")
-            output_lines.append(f"  旧配置: {source}")
+            output_lines.append(f"  原始配置: {source}")
 
             try:
-                # 0. 检查是否已经迁移过（避免重复）
+                # 1. 读取状态文件
                 state_path = STATE_DIR / f"{domain}.env"
-                if state_path.exists():
-                    state = {}
-                    for line in state_path.read_text(encoding="utf-8").splitlines():
-                        if "=" in line and not line.startswith("#"):
-                            key, value = line.split("=", 1)
-                            state[key.strip()] = value.strip()
-
-                    # 如果已标记为已迁移，跳过
-                    if state.get("MIGRATED") == "1":
-                        output_lines.append(f"  ⚠ 已迁移过，跳过\n")
-                        continue
-
-                    upstream = state.get("UPSTREAM", "")
-                    upstream_scheme = state.get("UPSTREAM_SCHEME", "http")
-                    enable_ssl = state.get("ENABLE_SSL", "0")
-                else:
-                    output_lines.append(f"  ✗ 状态文件不存在，跳过")
+                if not state_path.exists():
+                    output_lines.append(f"  ✗ 状态文件不存在，跳过\n")
                     failed += 1
                     continue
+
+                state = {}
+                for line in state_path.read_text(encoding="utf-8").splitlines():
+                    if "=" in line and not line.startswith("#"):
+                        key, value = line.split("=", 1)
+                        state[key.strip()] = value.strip()
+
+                # 检查是否已迁移
+                if state.get("MIGRATED") == "1":
+                    output_lines.append(f"  ⚠ 已迁移过，跳过\n")
+                    continue
+
+                upstream = state.get("UPSTREAM", "")
+                upstream_scheme = state.get("UPSTREAM_SCHEME", "http")
+                enable_ssl = state.get("ENABLE_SSL", "0")
 
                 if not upstream:
-                    output_lines.append(f"  ✗ 无法读取后端配置，跳过")
+                    output_lines.append(f"  ✗ 无法读取后端配置，跳过\n")
                     failed += 1
                     continue
 
-                # 1. 备份旧配置
-                if source and pathlib.Path(source).exists():
+                # 2. 备份原始配置文件
+                imported_source = state.get("IMPORTED_SOURCE", "")
+                if imported_source and pathlib.Path(imported_source).exists():
                     backup_dir = pathlib.Path("/opt/host-nginx-manager/backups")
                     backup_dir.mkdir(parents=True, exist_ok=True)
                     timestamp = int(time.time())
                     backup_path = backup_dir / f"{domain}-legacy-{timestamp}.conf"
                     import shutil
-                    shutil.copy2(source, backup_path)
-                    output_lines.append(f"  ✓ 已备份旧配置: {backup_path}")
+                    shutil.copy2(imported_source, backup_path)
+                    output_lines.append(f"  ✓ 已备份原始配置: {backup_path}")
 
-                # 2. 删除旧的标准配置（如果存在）
+                # 3. 删除旧的管理器生成的配置（如果存在）
                 old_conf = pathlib.Path(f"/etc/nginx/sites-available/vpspm-{domain}.conf")
                 if old_conf.exists():
                     old_conf.unlink()
@@ -2587,60 +2575,59 @@ def migrate_legacy_sites() -> dict[str, object]:
                 if old_link.exists():
                     old_link.unlink()
 
-                # 3. 使用管理脚本重建配置
-                args = [MANAGER_BIN, "add", domain, upstream, "--upstream-scheme", upstream_scheme]
-                if enable_ssl == "1":
-                    args.append("--no-ssl")  # 先创建HTTP，稍后启用SSL（避免重复申请证书）
+                # 4. 使用管理脚本重建配置
+                args = [MANAGER_BIN, "add", domain, upstream, "--upstream-scheme", upstream_scheme, "--no-ssl"]
 
                 result = run_cmd(args, timeout=60)
                 if result["code"] != 0:
-                    output_lines.append(f"  ✗ 重建配置失败: {result['output'][:100]}")
+                    output_lines.append(f"  ✗ 重建配置失败: {result['output'][:200]}\n")
                     failed += 1
                     continue
 
                 output_lines.append(f"  ✓ 已创建标准配置")
 
-                # 4. 如果原来启用了SSL，启用SSL（复用证书）
+                # 5. 如果原来启用了SSL，启用SSL（复用证书）
                 if enable_ssl == "1":
                     ssl_result = run_cmd([MANAGER_BIN, "enable-ssl", domain], timeout=60)
                     if ssl_result["code"] == 0:
                         output_lines.append(f"  ✓ 已启用HTTPS（复用证书）")
                     else:
-                        output_lines.append(f"  ⚠ HTTPS启用失败，但HTTP配置已创建")
+                        output_lines.append(f"  ⚠ HTTPS启用失败: {ssl_result['output'][:200]}")
 
-                # 5. 注释或删除旧配置（非标准配置文件）
-                if source and not source.startswith("/etc/nginx/sites-available/vpspm-"):
-                    if pathlib.Path(source).exists():
-                        comment_result = comment_out_nginx_config(domain, source)
-                        if comment_result["code"] == 0:
-                            output_lines.append(f"  ✓ 已注释旧配置")
-                        else:
-                            output_lines.append(f"  ⚠ 旧配置注释失败: {comment_result.get('output', '')[:100]}")
+                # 6. 注释原始配置文件
+                if imported_source and pathlib.Path(imported_source).exists():
+                    comment_result = comment_out_nginx_config(domain, imported_source)
+                    if comment_result["code"] == 0:
+                        output_lines.append(f"  ✓ 已注释原始配置")
+                    else:
+                        output_lines.append(f"  ⚠ 原始配置注释失败（可能已注释）")
 
-                # 6. 更新状态文件标记
+                # 7. 更新状态文件：标记为已迁移
                 state["MIGRATED"] = "1"
-                state["IMPORTED"] = "0"  # 清除 IMPORTED 标记
+                state["IMPORTED"] = "0"
                 write_managed_state(domain, state)
 
                 output_lines.append(f"  ✓ 迁移完成\n")
                 migrated += 1
 
             except Exception as e:
-                output_lines.append(f"  ✗ 迁移失败: {e}\n")
+                import traceback
+                output_lines.append(f"  ✗ 迁移失败: {e}")
+                output_lines.append(f"  {traceback.format_exc()[:200]}\n")
                 failed += 1
 
         # 重载 nginx
-        output_lines.append("\n正在重载 nginx...")
+        output_lines.append("正在重载 nginx...")
         reload_result = run_cmd(["systemctl", "reload", "nginx"], timeout=30)
         if reload_result["code"] != 0:
             reload_result = run_cmd(["nginx", "-s", "reload"], timeout=30)
 
         if reload_result["code"] == 0:
-            output_lines.append("✓ Nginx 已重载")
+            output_lines.append("✓ Nginx 已重载\n")
         else:
-            output_lines.append(f"⚠ Nginx 重载失败: {reload_result['output']}")
+            output_lines.append(f"⚠ Nginx 重载失败: {reload_result['output'][:200]}\n")
 
-        output_lines.append(f"\n总结：成功 {migrated} 个，失败 {failed} 个")
+        output_lines.append(f"总结：成功 {migrated} 个，失败 {failed} 个")
 
         return {
             "code": 0,
@@ -2651,7 +2638,9 @@ def migrate_legacy_sites() -> dict[str, object]:
         }
 
     except Exception as e:
+        import traceback
         output_lines.append(f"\n✗ 迁移过程出错: {e}")
+        output_lines.append(traceback.format_exc()[:500])
         return {
             "code": 2,
             "success": False,
