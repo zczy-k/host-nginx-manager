@@ -313,6 +313,14 @@ APP_HTML = r'''<!doctype html>
           <div id="certVerifyResult" style="margin-top:12px;"></div>
         </div>
 
+        <div style="margin:24px 0;border-top:2px solid var(--line);padding-top:24px;">
+          <h3>步骤 4：统一配置格式</h3>
+          <p class="muted">检测并迁移使用旧配置的站点（如从 Certbot 或 NPM 接管的站点），统一为本项目的标准格式。</p>
+          <button class="btn primary" id="checkLegacyBtn" type="button">🔍 检查旧配置站点</button>
+          <button class="btn primary" id="migrateLegacyBtn" type="button" disabled>🔄 一键统一配置</button>
+          <div id="legacyCheckResult" style="margin-top:12px;"></div>
+        </div>
+
         <details style="margin-top:24px;">
           <summary>高级选项</summary>
           <div style="padding:16px;background:#f8f9fa;border-radius:8px;margin-top:12px;">
@@ -1210,6 +1218,68 @@ $('#verifyCertsBtn').onclick = async () => {
   } finally {
     btn.disabled = false;
     btn.textContent = '✓ 验证修复';
+  }
+};
+
+$('#checkLegacyBtn').onclick = async () => {
+  const btn = $('#checkLegacyBtn');
+  btn.disabled = true;
+  btn.textContent = '检查中...';
+  $('#legacyCheckResult').innerHTML = '<div style="color:var(--blue);">正在检查旧配置站点...</div>';
+  try {
+    const data = await api('/api/migrate/check-legacy', {method:'POST', body:'{}'});
+    let html = '<div class="panel" style="margin-top:12px;background:#f8f9fa;">';
+    html += '<h4>检查结果：</h4>';
+    if (data.legacy_sites.length > 0) {
+      html += `<p style="color:var(--amber);"><strong>发现 ${data.legacy_sites.length} 个使用旧配置的站点：</strong></p><ul>`;
+      data.legacy_sites.forEach(site => {
+        html += `<li><strong>${escapeHtml(site.domain)}</strong><div class="muted">配置文件: ${escapeHtml(site.source)}</div><div class="muted">问题: ${escapeHtml(site.issues.join(', '))}</div></li>`;
+      });
+      html += '</ul>';
+      html += '<p class="muted">建议：点击"一键统一配置"将这些站点迁移到标准格式。</p>';
+      $('#migrateLegacyBtn').disabled = false;
+    } else {
+      html += '<p style="color:var(--green);"><strong>✓ 所有站点均使用标准配置</strong></p>';
+    }
+    html += '</div>';
+    $('#legacyCheckResult').innerHTML = html;
+  } catch(err) {
+    $('#legacyCheckResult').innerHTML = `<div class="panel" style="background:#fee;color:var(--red);margin-top:12px;">❌ ${escapeHtml(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 检查旧配置站点';
+  }
+};
+
+$('#migrateLegacyBtn').onclick = async () => {
+  if (!confirm('⚠️ 确认统一配置格式？\n\n此操作将：\n✓ 将旧配置站点迁移到标准格式\n✓ 保留所有证书和后端设置\n✓ 注释或删除旧配置文件\n✓ 启用 IPv6、HTTP/2 等新特性\n✓ 网站保持正常运行\n\n操作前会自动创建备份，可随时回滚。')) return;
+
+  const btn = $('#migrateLegacyBtn');
+  btn.disabled = true;
+  btn.textContent = '迁移中...';
+  $('#legacyCheckResult').innerHTML = '<div style="color:var(--blue);">正在迁移旧配置站点...</div>';
+  try {
+    const data = await api('/api/migrate/migrate-legacy', {method:'POST', body:'{}'});
+    let html = '<div class="panel" style="margin-top:12px;';
+    if (data.success) {
+      html += 'background:#d4f4dd;color:var(--green);">';
+      html += '<h4>✓ 迁移完成！</h4>';
+      html += `<p>成功迁移 ${data.migrated} 个站点</p>`;
+    } else {
+      html += 'background:#fff4db;color:var(--amber);">';
+      html += '<h4>⚠ 部分站点迁移失败</h4>';
+      html += `<p>成功: ${data.migrated} 个，失败: ${data.failed} 个</p>`;
+    }
+    html += '<pre style="max-height:400px;overflow:auto;margin-top:12px;">' + escapeHtml(data.output) + '</pre>';
+    html += '</div>';
+    $('#legacyCheckResult').innerHTML = html;
+    showMsg('✓ 配置统一完成，正在刷新...', 'ok');
+    setTimeout(() => load(), 2000);
+  } catch(err) {
+    $('#legacyCheckResult').innerHTML = `<div class="panel" style="background:#fee;color:var(--red);margin-top:12px;">❌ ${escapeHtml(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 一键统一配置';
   }
 };
 
@@ -2374,6 +2444,200 @@ def verify_certificate_permissions() -> dict[str, object]:
         }
 
 
+def check_legacy_sites() -> dict[str, object]:
+    """检查使用旧配置的站点"""
+    try:
+        servers = list_nginx_servers()
+        legacy_sites = []
+
+        for server in servers:
+            if not server.get("managed"):
+                continue
+
+            domain = server.get("managed_domain") or server.get("domain")
+            source = server.get("source", "")
+
+            # 判断是否为旧配置
+            issues = []
+
+            # 1. 检查是否为接管但未迁移的站点
+            managed_sites = list_managed_sites()
+            site_state = next((s for s in managed_sites if s.get("DOMAIN") == domain), {})
+            if site_state.get("IMPORTED") == "1" and site_state.get("MIGRATED") != "1":
+                issues.append("已接管但未迁移到标准配置")
+
+            # 2. 检查配置文件名是否为标准格式
+            if source and not source.startswith("/etc/nginx/sites-available/vpspm-"):
+                issues.append("配置文件不是标准格式")
+
+            # 3. 检查是否使用了 if 语句（Certbot 风格）
+            if source and pathlib.Path(source).exists():
+                content = pathlib.Path(source).read_text(encoding="utf-8", errors="ignore")
+                if "if ($host =" in content or "if($host=" in content:
+                    issues.append("使用了 if 条件判断（Certbot风格）")
+                if "managed by Certbot" in content:
+                    issues.append("包含 Certbot 标记")
+                if not "vps-proxy-manager" in content and not "VPS Nginx" in content:
+                    issues.append("缺少本项目标识")
+
+            if issues:
+                legacy_sites.append({
+                    "domain": domain,
+                    "source": source,
+                    "issues": issues
+                })
+
+        return {
+            "code": 0,
+            "legacy_sites": legacy_sites,
+            "total": len(legacy_sites)
+        }
+
+    except Exception as e:
+        return {
+            "code": 1,
+            "legacy_sites": [],
+            "total": 0,
+            "error": str(e)
+        }
+
+
+def migrate_legacy_sites() -> dict[str, object]:
+    """迁移旧配置站点到标准格式"""
+    output_lines = []
+    migrated = 0
+    failed = 0
+
+    try:
+        # 检查旧配置站点
+        check_result = check_legacy_sites()
+        legacy_sites = check_result.get("legacy_sites", [])
+
+        if not legacy_sites:
+            return {
+                "code": 0,
+                "success": True,
+                "migrated": 0,
+                "failed": 0,
+                "output": "没有需要迁移的站点"
+            }
+
+        output_lines.append(f"发现 {len(legacy_sites)} 个需要迁移的站点\n")
+
+        for site in legacy_sites:
+            domain = site["domain"]
+            source = site["source"]
+
+            output_lines.append(f"正在迁移: {domain}")
+            output_lines.append(f"  旧配置: {source}")
+
+            try:
+                # 1. 读取状态文件获取配置
+                state_path = STATE_DIR / f"{domain}.env"
+                if not state_path.exists():
+                    output_lines.append(f"  ✗ 状态文件不存在，跳过")
+                    failed += 1
+                    continue
+
+                state = {}
+                for line in state_path.read_text(encoding="utf-8").splitlines():
+                    if "=" in line and not line.startswith("#"):
+                        key, value = line.split("=", 1)
+                        state[key.strip()] = value.strip()
+
+                upstream = state.get("UPSTREAM", "")
+                upstream_scheme = state.get("UPSTREAM_SCHEME", "http")
+                enable_ssl = state.get("ENABLE_SSL", "0")
+
+                if not upstream:
+                    output_lines.append(f"  ✗ 无法读取后端配置，跳过")
+                    failed += 1
+                    continue
+
+                # 2. 备份旧配置
+                if source and pathlib.Path(source).exists():
+                    backup_dir = pathlib.Path("/opt/host-nginx-manager/backups")
+                    backup_dir.mkdir(parents=True, exist_ok=True)
+                    timestamp = int(time.time())
+                    backup_path = backup_dir / f"{domain}-legacy-{timestamp}.conf"
+                    import shutil
+                    shutil.copy2(source, backup_path)
+                    output_lines.append(f"  ✓ 已备份旧配置: {backup_path}")
+
+                # 3. 使用管理脚本重建配置
+                args = [MANAGER_BIN, "add", domain, upstream, "--upstream-scheme", upstream_scheme]
+                if enable_ssl == "1":
+                    args.append("--no-ssl")  # 先创建HTTP，稍后启用SSL（避免重复申请证书）
+
+                result = run_cmd(args, timeout=60)
+                if result["code"] != 0:
+                    output_lines.append(f"  ✗ 重建配置失败: {result['output'][:100]}")
+                    failed += 1
+                    continue
+
+                output_lines.append(f"  ✓ 已创建标准配置")
+
+                # 4. 如果原来启用了SSL，启用SSL（复用证书）
+                if enable_ssl == "1":
+                    ssl_result = run_cmd([MANAGER_BIN, "enable-ssl", domain], timeout=60)
+                    if ssl_result["code"] == 0:
+                        output_lines.append(f"  ✓ 已启用HTTPS（复用证书）")
+                    else:
+                        output_lines.append(f"  ⚠ HTTPS启用失败，但HTTP配置已创建")
+
+                # 5. 注释或删除旧配置
+                if source and pathlib.Path(source).exists():
+                    comment_result = comment_out_nginx_config(domain, source)
+                    if comment_result["code"] == 0:
+                        output_lines.append(f"  ✓ 已注释旧配置")
+                    else:
+                        output_lines.append(f"  ⚠ 旧配置注释失败，请手动处理")
+
+                # 6. 更新状态文件标记
+                state["MIGRATED"] = "1"
+                if "IMPORTED" in state:
+                    del state["IMPORTED"]
+                write_managed_state(domain, state)
+
+                output_lines.append(f"  ✓ 迁移完成\n")
+                migrated += 1
+
+            except Exception as e:
+                output_lines.append(f"  ✗ 迁移失败: {e}\n")
+                failed += 1
+
+        # 重载 nginx
+        output_lines.append("\n正在重载 nginx...")
+        reload_result = run_cmd(["systemctl", "reload", "nginx"], timeout=30)
+        if reload_result["code"] != 0:
+            reload_result = run_cmd(["nginx", "-s", "reload"], timeout=30)
+
+        if reload_result["code"] == 0:
+            output_lines.append("✓ Nginx 已重载")
+        else:
+            output_lines.append(f"⚠ Nginx 重载失败: {reload_result['output']}")
+
+        output_lines.append(f"\n总结：成功 {migrated} 个，失败 {failed} 个")
+
+        return {
+            "code": 0,
+            "success": failed == 0,
+            "migrated": migrated,
+            "failed": failed,
+            "output": "\n".join(output_lines)
+        }
+
+    except Exception as e:
+        output_lines.append(f"\n✗ 迁移过程出错: {e}")
+        return {
+            "code": 2,
+            "success": False,
+            "migrated": migrated,
+            "failed": failed,
+            "output": "\n".join(output_lines)
+        }
+
+
 def run_cmd(args: list[str], timeout: int = 90) -> dict[str, object]:
     try:
         proc = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
@@ -2658,6 +2922,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/migrate/verify":
             result = verify_certificate_permissions()
+            self.send_json(result, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/migrate/check-legacy":
+            result = check_legacy_sites()
+            self.send_json(result, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/migrate/migrate-legacy":
+            result = migrate_legacy_sites()
             self.send_json(result, 200 if result["code"] == 0 else 500)
             return
 
