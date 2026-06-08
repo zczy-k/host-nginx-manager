@@ -798,9 +798,48 @@ function renderProblemRows(){
   }).join('') : '<div class="muted">当前没有需要优先处理的站点。</div>';
 }
 function renderCertificateRows(){
+  // 去重：同一个 managed_domain 只保留一个（优先 HTTPS 块）
   const allCertificates = state.sites.filter(isCertificateSite);
-  const filteredCertificates = getFilteredCertificates();
-  $('#certSummary').textContent = `显示 ${filteredCertificates.length} / ${allCertificates.length}`;
+  const seenDomains = new Map();
+  allCertificates.forEach(site => {
+    const key = site.managed_domain || site.domain;
+    if (!seenDomains.has(key)) {
+      seenDomains.set(key, site);
+    } else {
+      // 如果已存在，优先保留 HTTPS 块（监听443）
+      const existing = seenDomains.get(key);
+      const hasHttps = site.listen && site.listen.some(l => l.includes('443'));
+      const existingHasHttps = existing.listen && existing.listen.some(l => l.includes('443'));
+      if (hasHttps && !existingHasHttps) {
+        seenDomains.set(key, site);
+      }
+    }
+  });
+  const uniqueCertificates = Array.from(seenDomains.values());
+
+  const filteredCertificates = uniqueCertificates.filter(s => {
+    if (certFilter === 'all') return true;
+    if (certFilter === 'issues') return hasAnyIssue(s);
+    if (certFilter === 'enabled') return s.https;
+    if (certFilter === 'needs_https') return s.managed && !s.imported && !s.https;
+    if (certFilter === 'ok') return s.cert_status === 'ok';
+    if (certFilter === 'warn') return s.cert_status === 'warn';
+    if (certFilter === 'missing') return s.https && !s.cert_status;
+    if (certFilter === 'error') return CERT_WARN_STATES.has(s.cert_status);
+    if (certFilter === 'dns_bad') return hasDnsIssue(s);
+    if (certFilter === 'managed') return s.managed;
+    return true;
+  }).filter(s => {
+    if (!certQuery) return true;
+    const q = certQuery.toLowerCase();
+    const domain = (s.domain || '').toLowerCase();
+    const names = Array.isArray(s.names) ? s.names.join(' ').toLowerCase() : '';
+    const status = (s.cert_status || '').toLowerCase();
+    const source = (s.source || '').toLowerCase();
+    return domain.includes(q) || names.includes(q) || status.includes(q) || source.includes(q);
+  });
+
+  $('#certSummary').textContent = `显示 ${filteredCertificates.length} / ${uniqueCertificates.length}`;
   const rows = filteredCertificates.map(s => {
     const domain = s.domain || '(默认站点)';
     const actionDomain = String(s.managed_domain || domain).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
