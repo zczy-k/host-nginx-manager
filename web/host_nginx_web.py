@@ -321,6 +321,13 @@ APP_HTML = r'''<!doctype html>
           <div id="legacyCheckResult" style="margin-top:12px;"></div>
         </div>
 
+        <div style="margin:24px 0;border-top:2px solid var(--line);padding-top:24px;">
+          <h3>步骤 5：清理重复配置</h3>
+          <p class="muted">检测并清理备份配置文件（.bak-*），解决证书中心显示重复站点的问题。</p>
+          <button class="btn" id="cleanDuplicatesBtn" type="button">🧹 清理重复配置</button>
+          <div id="cleanDuplicatesResult" style="margin-top:12px;"></div>
+        </div>
+
         <details style="margin-top:24px;">
           <summary>高级选项</summary>
           <div style="padding:16px;background:#f8f9fa;border-radius:8px;margin-top:12px;">
@@ -1280,6 +1287,37 @@ $('#migrateLegacyBtn').onclick = async () => {
   } finally {
     btn.disabled = false;
     btn.textContent = '🔄 一键统一配置';
+  }
+};
+
+$('#cleanDuplicatesBtn').onclick = async () => {
+  if (!confirm('确认清理重复配置？\n\n此操作将：\n✓ 删除所有备份配置文件（.bak-*）\n✓ 只保留标准配置文件\n✓ 解决证书中心重复显示问题\n\n不影响站点正常运行。')) return;
+
+  const btn = $('#cleanDuplicatesBtn');
+  btn.disabled = true;
+  btn.textContent = '清理中...';
+  $('#cleanDuplicatesResult').innerHTML = '<div style="color:var(--blue);">正在清理重复配置...</div>';
+  try {
+    const data = await api('/api/migrate/clean-duplicates', {method:'POST', body:'{}'});
+    let html = '<div class="panel" style="margin-top:12px;';
+    if (data.success) {
+      html += 'background:#d4f4dd;color:var(--green);">';
+      html += '<h4>✓ 清理完成！</h4>';
+      html += `<p>清理了 ${data.cleaned} 个备份配置文件</p>`;
+    } else {
+      html += 'background:#fff4db;color:var(--amber);">';
+      html += '<h4>⚠ 部分文件清理失败</h4>';
+    }
+    html += '<pre style="max-height:300px;overflow:auto;margin-top:12px;">' + escapeHtml(data.output) + '</pre>';
+    html += '</div>';
+    $('#cleanDuplicatesResult').innerHTML = html;
+    showMsg('✓ 清理完成，正在刷新...', 'ok');
+    setTimeout(() => load(), 2000);
+  } catch(err) {
+    $('#cleanDuplicatesResult').innerHTML = `<div class="panel" style="background:#fee;color:var(--red);margin-top:12px;">❌ ${escapeHtml(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🧹 清理重复配置';
   }
 };
 
@@ -2406,6 +2444,76 @@ def verify_certificate_permissions() -> dict[str, object]:
         }
 
 
+def clean_duplicate_configs() -> dict[str, object]:
+    """清理重复的备份配置文件"""
+    output_lines = []
+    cleaned = 0
+
+    try:
+        output_lines.append("正在扫描备份配置文件...\n")
+
+        # 扫描 sites-enabled 和 sites-available 目录
+        for directory in ["/etc/nginx/sites-enabled", "/etc/nginx/sites-available"]:
+            dir_path = pathlib.Path(directory)
+            if not dir_path.exists():
+                continue
+
+            output_lines.append(f"扫描目录: {directory}")
+
+            for file_path in dir_path.iterdir():
+                if not file_path.is_file() and not file_path.is_symlink():
+                    continue
+
+                filename = file_path.name
+
+                # 匹配备份文件：.bak-*, .bak, .old, *~
+                if any([
+                    ".bak-" in filename,
+                    filename.endswith(".bak"),
+                    filename.endswith(".old"),
+                    filename.endswith("~"),
+                ]):
+                    try:
+                        if file_path.is_symlink():
+                            file_path.unlink()
+                        else:
+                            file_path.unlink()
+                        output_lines.append(f"  ✓ 已删除: {filename}")
+                        cleaned += 1
+                    except Exception as e:
+                        output_lines.append(f"  ✗ 删除失败: {filename} ({e})")
+
+        output_lines.append(f"\n清理完成：删除了 {cleaned} 个备份配置文件")
+
+        # 重载 nginx
+        if cleaned > 0:
+            output_lines.append("\n正在重载 nginx...")
+            reload_result = run_cmd(["systemctl", "reload", "nginx"], timeout=30)
+            if reload_result["code"] != 0:
+                reload_result = run_cmd(["nginx", "-s", "reload"], timeout=30)
+
+            if reload_result["code"] == 0:
+                output_lines.append("✓ nginx 已重载")
+            else:
+                output_lines.append(f"⚠ nginx 重载失败: {reload_result['output'][:150]}")
+
+        return {
+            "code": 0,
+            "success": True,
+            "cleaned": cleaned,
+            "output": "\n".join(output_lines)
+        }
+
+    except Exception as e:
+        return {
+            "code": 1,
+            "success": False,
+            "cleaned": cleaned,
+            "output": f"清理失败: {e}\n" + "\n".join(output_lines)
+        }
+
+
+
 def check_legacy_sites() -> dict[str, object]:
     """检查使用旧配置的站点"""
     try:
@@ -2907,6 +3015,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/migrate/migrate-legacy":
             result = migrate_legacy_sites()
+            self.send_json(result, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/migrate/clean-duplicates":
+            result = clean_duplicate_configs()
             self.send_json(result, 200 if result["code"] == 0 else 500)
             return
 
