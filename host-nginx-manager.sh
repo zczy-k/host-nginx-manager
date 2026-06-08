@@ -703,6 +703,90 @@ cmd_set_auto_renew() {
     fi
 }
 
+cmd_diagnose() {
+    DOMAIN="$(normalize_domain "${1:-}")"
+    validate_domain "$DOMAIN" || die "无效域名：$DOMAIN"
+
+    section "诊断站点：$DOMAIN"
+
+    # 1. 检查状态文件
+    local state_file="$(state_file "$DOMAIN")"
+    if [[ -f "$state_file" ]]; then
+        log "✓ 状态文件存在"
+        load_state "$DOMAIN"
+        info "  后端：$UPSTREAM_SCHEME://$UPSTREAM"
+        info "  HTTPS：$ENABLE_SSL"
+        info "  自动续期：$AUTO_RENEW"
+    else
+        error "✗ 状态文件不存在：$state_file"
+        return 1
+    fi
+
+    # 2. 检查配置文件
+    local conf_file="/etc/nginx/sites-available/${SITE_PREFIX}-${DOMAIN}.conf"
+    local conf_link="/etc/nginx/sites-enabled/${SITE_PREFIX}-${DOMAIN}.conf"
+
+    if [[ -f "$conf_file" ]]; then
+        # 检查是否被注释
+        local active_lines=$(grep -c "^[^#]*server_name $DOMAIN" "$conf_file" 2>/dev/null || echo "0")
+        local commented_lines=$(grep -c "^#.*server_name $DOMAIN" "$conf_file" 2>/dev/null || echo "0")
+
+        if [[ "$active_lines" -gt 0 ]]; then
+            log "✓ 配置文件正常（$active_lines 个 server 块）"
+        elif [[ "$commented_lines" -gt 0 ]]; then
+            warn "⚠ 配置被注释（$commented_lines 个 server 块）"
+            warn "  修复：host-nginx-manager update $DOMAIN $UPSTREAM"
+        else
+            warn "⚠ 配置异常：未找到 server_name"
+        fi
+    else
+        error "✗ 配置文件不存在：$conf_file"
+        warn "  修复：host-nginx-manager update $DOMAIN $UPSTREAM"
+    fi
+
+    if [[ -L "$conf_link" ]]; then
+        log "✓ 软链接正常"
+    else
+        warn "⚠ 软链接不存在"
+    fi
+
+    # 3. 检查证书
+    if [[ "$ENABLE_SSL" == "1" ]]; then
+        local cert_dir="/etc/letsencrypt/live/$DOMAIN"
+        if [[ -d "$cert_dir" ]]; then
+            log "✓ 证书目录存在"
+
+            # 检查续期配置
+            local renewal_conf="/etc/letsencrypt/renewal/${DOMAIN}.conf"
+            if [[ -f "$renewal_conf" ]]; then
+                local webroot_path=$(grep "^webroot_path" "$renewal_conf" | cut -d= -f2 | xargs)
+                if [[ "$webroot_path" == "$ACME_ROOT" ]]; then
+                    log "✓ 续期配置正确"
+                else
+                    warn "⚠ webroot_path 错误：$webroot_path"
+                    warn "  应该是：$ACME_ROOT"
+                    warn "  修复：host-nginx-manager enable-ssl $DOMAIN"
+                fi
+            else
+                warn "⚠ 续期配置不存在"
+            fi
+        else
+            warn "⚠ 证书目录不存在"
+        fi
+    fi
+
+    # 4. 测试 nginx 配置
+    if nginx -t 2>&1 | grep -q "test is successful"; then
+        log "✓ nginx 配置测试通过"
+    else
+        error "✗ nginx 配置测试失败"
+        nginx -t
+        return 1
+    fi
+
+    log "诊断完成"
+}
+
 main() {
     case "$COMMAND" in
         help|-h|--help)
@@ -757,6 +841,10 @@ main() {
         set-auto-renew)
             [[ $# -ge 1 ]] || die "用法：set-auto-renew DOMAIN [0|1]"
             cmd_set_auto_renew "$@"
+            ;;
+        diagnose)
+            [[ $# -ge 1 ]] || die "用法：diagnose DOMAIN"
+            cmd_diagnose "$1"
             ;;
 
         *)
