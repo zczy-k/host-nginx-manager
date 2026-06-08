@@ -176,6 +176,47 @@ do_upgrade() {
     echo ""
 }
 
+clean_before_install() {
+    section "清理旧配置和数据"
+
+    # 停止并禁用服务
+    if systemctl is-active host-nginx-manager-web.service >/dev/null 2>&1; then
+        info "停止服务..."
+        systemctl stop host-nginx-manager-web.service || true
+    fi
+
+    if systemctl is-enabled host-nginx-manager-web.service >/dev/null 2>&1; then
+        info "禁用服务..."
+        systemctl disable host-nginx-manager-web.service >/dev/null 2>&1 || true
+    fi
+
+    # 删除配置文件
+    if [[ -f "$ENV_FILE" ]]; then
+        info "删除配置文件: $ENV_FILE"
+        rm -f "$ENV_FILE"
+    fi
+
+    if [[ -d "$ENV_DIR" ]]; then
+        info "删除配置目录: $ENV_DIR"
+        rm -rf "$ENV_DIR"
+    fi
+
+    # 删除服务文件
+    if [[ -f "$SERVICE_FILE" ]]; then
+        info "删除服务文件: $SERVICE_FILE"
+        rm -f "$SERVICE_FILE"
+        systemctl daemon-reload
+    fi
+
+    # 删除安装目录（但保留受管站点和备份）
+    if [[ -d "$WEB_DIR" ]]; then
+        info "删除Web界面: $WEB_DIR"
+        rm -rf "$WEB_DIR"
+    fi
+
+    log "旧配置已清理完成"
+}
+
 do_install() {
     section "开始安装 Host Nginx Manager"
 
@@ -192,18 +233,11 @@ do_install() {
     curl -fsSL "$RAW_BASE/web/host_nginx_web.py" -o "$WEB_DIR/host_nginx_web.py"
     chmod 0755 "$WEB_DIR/host_nginx_web.py"
 
+    # 生成新的密码和密钥（全新安装）
+    info "生成新的密码和密钥..."
     local password secret
-    if [[ -f "$ENV_FILE" ]]; then
-        # shellcheck disable=SC1090
-        . "$ENV_FILE"
-        password="${HNG_WEB_PASSWORD:-}"
-        secret="${HNG_WEB_SECRET:-}"
-    else
-        password=""
-        secret=""
-    fi
-    password="${password:-$(generate_secret)}"
-    secret="${secret:-$(generate_secret)}"
+    password="$(generate_secret)"
+    secret="$(generate_secret)"
 
     info "生成配置文件..."
     cat > "$ENV_FILE" <<EOF
@@ -330,11 +364,24 @@ main() {
             2)
                 if detect_mode; then
                     echo ""
-                    warn "警告：这将重置所有配置和密码！"
+                    warn "⚠️  警告：全新安装会清理以下内容"
+                    echo ""
+                    echo "  将被删除："
+                    echo "    • Web管理界面的配置和密码"
+                    echo "    • systemd服务文件"
+                    echo "    • 登录会话信息"
+                    echo ""
+                    echo "  不会删除："
+                    echo "    ✓ 受管站点配置 (/etc/nginx/vps-proxy-manager/sites/)"
+                    echo "    ✓ nginx站点配置 (/etc/nginx/sites-*/)"
+                    echo "    ✓ SSL证书 (/etc/letsencrypt/)"
+                    echo "    ✓ 备份文件 (/opt/host-nginx-manager/backups/)"
+                    echo ""
                     printf "确认要全新安装吗？ [y/N]: "
                     local confirm=""
                     read -r confirm <"$TTY_IN" || confirm="n"
                     if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                        clean_before_install
                         install_packages
                         do_install
                         echo ""
