@@ -1399,9 +1399,14 @@ def take_over_site(domain: str, source: str) -> dict[str, object]:
         return {"code": 2, "output": "域名无效"}
 
     servers = list_nginx_servers()
-    server = next((item for item in servers if item.get("domain") == domain and item.get("source") == source), None)
-    if not server:
+    # 同一域名可能有多个server块（如80+443），优先选择可管理的
+    matching_servers = [item for item in servers if item.get("domain") == domain and item.get("source") == source]
+    if not matching_servers:
         return {"code": 3, "output": "未找到对应 nginx 站点，请刷新后重试"}
+
+    # 优先选择can_manage=True的站点
+    server = next((s for s in matching_servers if s.get("can_manage")), matching_servers[0])
+
     if not server.get("can_manage"):
         return {"code": 4, "output": f"该站点不能纳入管理：{server.get('readonly_reason') or '只读'}"}
 
