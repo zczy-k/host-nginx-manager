@@ -2087,7 +2087,8 @@ class Handler(BaseHTTPRequestHandler):
             domain = ""
             for part in query.split("&"):
                 if part.startswith("domain="):
-                    domain = part.split("=", 1)[1]
+                    from urllib.parse import unquote
+                    domain = unquote(part.split("=", 1)[1])
             if not domain:
                 self.send_json({"error": "缺少 domain 参数"}, 400)
                 return
@@ -2096,16 +2097,17 @@ class Handler(BaseHTTPRequestHandler):
             servers = list_nginx_servers()
             server = next((s for s in servers if s.get("domain") == domain or s.get("managed_domain") == domain), None)
             if not server:
-                self.send_json({"error": "未找到该站点"}, 404)
+                self.send_json({"error": f"未找到该站点: {domain}"}, 404)
+                return
+
+            # 检查站点是否启用了HTTPS
+            if not server.get("https"):
+                self.send_json({"error": "该站点未启用 HTTPS，无证书信息", "status": "none"}, 400)
                 return
 
             cert_path = str(server.get("ssl_cert_path") or "")
-            if not cert_path and server.get("https"):
-                cert_path = f"/etc/letsencrypt/live/{domain}/fullchain.pem"
-
             if not cert_path:
-                self.send_json({"error": "该站点未配置证书"}, 400)
-                return
+                cert_path = f"/etc/letsencrypt/live/{domain}/fullchain.pem"
 
             detail = read_certificate_detail(cert_path)
             self.send_json({"domain": domain, "cert_path": cert_path, **detail})
