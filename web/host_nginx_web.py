@@ -125,8 +125,6 @@ PAGE_CSS = r'''
     .source-col { max-width:300px; font-size:13px; color:var(--muted); }
     .actions-col { min-width:200px; white-space:nowrap; }
     .modal-close { cursor:pointer; font-size:24px; color:var(--muted); }
-  </style>
-'''
     .cert-detail-grid { display:grid; gap:12px; }
     .cert-detail-row { display:grid; grid-template-columns:140px 1fr; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); }
     .cert-detail-label { font-weight:600; color:var(--muted); }
