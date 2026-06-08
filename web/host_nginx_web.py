@@ -894,8 +894,47 @@ function render(){
   renderProblemRows();
   renderIssueRows();
   renderCertificateRows();
-  const filteredSites = getFilteredSites();
-  $('#siteSummary').textContent = `显示 ${filteredSites.length} / ${state.sites.length}`;
+
+  // 站点去重：同一个 managed_domain 只保留一个（优先 HTTPS 块）
+  const allSites = state.sites;
+  const seenSiteDomains = new Map();
+  allSites.forEach(site => {
+    const key = site.managed_domain || site.domain;
+    if (!seenSiteDomains.has(key)) {
+      seenSiteDomains.set(key, site);
+    } else {
+      // 优先保留 HTTPS 块
+      const existing = seenSiteDomains.get(key);
+      const hasHttps = site.listen && site.listen.some(l => l.includes('443'));
+      const existingHasHttps = existing.listen && existing.listen.some(l => l.includes('443'));
+      if (hasHttps && !existingHasHttps) {
+        seenSiteDomains.set(key, site);
+      }
+    }
+  });
+  const uniqueSites = Array.from(seenSiteDomains.values());
+
+  const filteredSites = uniqueSites.filter(s => {
+    if (siteFilter === 'all') return true;
+    if (siteFilter === 'managed') return s.managed;
+    if (siteFilter === 'imported') return s.imported;
+    if (siteFilter === 'importable') return s.importable;
+    if (siteFilter === 'proxy') return s.kind === '反向代理';
+    if (siteFilter === 'static') return s.kind === '静态站点';
+    if (siteFilter === 'https') return s.https;
+    if (siteFilter === 'http') return !s.https;
+    return true;
+  }).filter(s => {
+    if (!siteQuery) return true;
+    const q = siteQuery.toLowerCase();
+    const domain = (s.domain || '').toLowerCase();
+    const names = Array.isArray(s.names) ? s.names.join(' ').toLowerCase() : '';
+    const target = (s.upstream || s.root || '').toLowerCase();
+    const source = (s.source || '').toLowerCase();
+    return domain.includes(q) || names.includes(q) || target.includes(q) || source.includes(q);
+  });
+
+  $('#siteSummary').textContent = `显示 ${filteredSites.length} / ${uniqueSites.length}`;
   const rows = filteredSites.map(s => {
     const domain = s.domain || '(默认站点)';
     const actionDomain = String(s.managed_domain || domain).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
