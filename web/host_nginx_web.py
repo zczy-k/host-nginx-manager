@@ -1146,8 +1146,13 @@ async function confirmRenewCert(domain, modalEl){
 async function setAutoRenew(domain, enable) {
   try {
     await action('/api/certs/set-auto-renew', {domain, enable});
+    showMsg(enable ? '已启用自动续期' : '已禁用自动续期', 'ok');
+    // 刷新数据以更新界面
+    await load();
   } catch(err) {
     showMsg(err.message, 'bad');
+    // 失败时也刷新，恢复复选框状态
+    await load();
   }
 }
 async function viewCert(domain){
