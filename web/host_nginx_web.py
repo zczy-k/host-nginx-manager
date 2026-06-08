@@ -980,7 +980,7 @@ function render(){
 
     let actions = '<span class="muted">只读</span>';
     if (s.managed) {
-      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`;
+      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small" onclick="renameSite('${actionDomain}')">重命名</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`;
     } else if (s.can_manage) {
       actions = `<button class="btn small primary" onclick="takeOverSite('${actionDomain}', '${actionSource}')">纳入管理</button>`;
     } else if (s.readonly_reason) {
@@ -1081,6 +1081,64 @@ async function confirmDeleteSite(domain, modalEl){
   const mode = modalEl.querySelector('input[name="deleteMode"]:checked').value;
   modalEl.remove();
   await action('/api/sites/remove',{domain, delete_cert: mode === 'delete'});
+}
+async function renameSite(domain){
+  showRenameModal(domain);
+}
+function showRenameModal(domain){
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:520px;">
+      <div class="modal-header">
+        <h3>重命名站点</h3>
+        <span class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div style="margin-bottom:16px;">
+          <label style="display:block;margin-bottom:4px;font-weight:500;">当前域名</label>
+          <input type="text" value="${escapeHtml(domain)}" readonly style="background:var(--bg-secondary);cursor:not-allowed;">
+        </div>
+        <div style="margin-bottom:16px;">
+          <label style="display:block;margin-bottom:4px;font-weight:500;">新域名 <span style="color:var(--red);">*</span></label>
+          <input type="text" id="newDomain" placeholder="例如: newdomain.example.com" style="width:100%;">
+        </div>
+        <div style="margin-bottom:16px;">
+          <label style="display:block;margin-bottom:4px;font-weight:500;">新后端地址（可选）</label>
+          <input type="text" id="newUpstream" placeholder="留空则保持原后端地址不变">
+          <div class="muted" style="margin-top:4px;font-size:13px;">如果只需要更换域名，请留空</div>
+        </div>
+        <div style="margin-bottom:20px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="deleteOldCert">
+            <span>删除旧证书</span>
+          </label>
+          <div class="muted" style="margin-top:4px;font-size:13px;">建议保留旧证书，以便回滚</div>
+        </div>
+        <div class="row" style="gap:12px;">
+          <button class="btn" onclick="this.closest('.modal-overlay').remove()">取消</button>
+          <span class="spacer"></span>
+          <button class="btn primary" onclick="confirmRenameSite('${escapeHtml(domain)}', this.closest('.modal-overlay'))">确认重命名</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  setTimeout(() => modal.querySelector('#newDomain').focus(), 100);
+}
+async function confirmRenameSite(domain, modalEl){
+  const newDomain = modalEl.querySelector('#newDomain').value.trim();
+  const newUpstream = modalEl.querySelector('#newUpstream').value.trim();
+  const deleteOldCert = modalEl.querySelector('#deleteOldCert').checked;
+
+  if(!newDomain){
+    alert('请输入新域名');
+    return;
+  }
+
+  modalEl.remove();
+  await action('/api/sites/rename', {domain, new_domain: newDomain, new_upstream: newUpstream, delete_old_cert: deleteOldCert});
 }
 async function commentOutConfig(domain, source){ if(confirm(`确认注释掉这个nginx配置？\n\n域名: ${domain}\n配置文件: ${source}\n\n操作将：\n1. 注释掉该server块\n2. 创建备份文件\n3. 重载nginx\n\n该配置不会被删除，只是被注释。`)) await action('/api/nginx/comment-out',{domain, source}); }
 async function takeOverSite(domain, source){
@@ -2161,6 +2219,48 @@ def remove_site_with_backup(domain: str, delete_cert: bool = False) -> dict[str,
         return {"code": 3, "output": f"删除失败：\n{result['output']}"}
 
 
+def rename_site(old_domain: str, new_domain: str, new_upstream: str = "", delete_old_cert: bool = False) -> dict[str, object]:
+    """重命名站点（修改域名）"""
+    old_domain = old_domain.strip().lower()
+    new_domain = new_domain.strip().lower()
+
+    if not DOMAIN_RE.match(old_domain):
+        return {"code": 1, "output": "旧域名无效"}
+    if not DOMAIN_RE.match(new_domain):
+        return {"code": 2, "output": "新域名无效"}
+
+    state_path = STATE_DIR / f"{old_domain}.env"
+    if not state_path.exists():
+        return {"code": 3, "output": "旧域名不存在"}
+
+    new_state_path = STATE_DIR / f"{new_domain}.env"
+    if new_state_path.exists():
+        return {"code": 4, "output": "新域名已存在，请先删除或选择其他域名"}
+
+    # 使用管理脚本重命名
+    args = [MANAGER_BIN, "rename", old_domain, new_domain]
+    if new_upstream:
+        args.extend(["--upstream", new_upstream])
+    if delete_old_cert:
+        args.append("--delete-old-cert")
+
+    result = run_cmd(args, timeout=180)
+
+    if result["code"] == 0:
+        output_parts = [
+            f"✓ 重命名完成",
+            f"  旧域名：{old_domain}",
+            f"  新域名：{new_domain}"
+        ]
+        if delete_old_cert:
+            output_parts.append("  ✓ 旧证书已删除")
+        else:
+            output_parts.append("  ✓ 旧证书已保留")
+        return {"code": 0, "output": "\n".join(output_parts)}
+    else:
+        return {"code": 5, "output": f"重命名失败：\n{result['output']}"}
+
+
 def force_reissue_certificate(domain: str) -> dict[str, object]:
     """强制重新申请证书：彻底删除现有证书后重新申请"""
     domain = domain.strip().lower()
@@ -3064,6 +3164,17 @@ class Handler(BaseHTTPRequestHandler):
             delete_cert = data.get("delete_cert", False)
             result = remove_site_with_backup(domain, delete_cert)
             self.send_json({"message": "站点已删除", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/sites/rename":
+            new_domain = str(data.get("new_domain", "")).strip()
+            new_upstream = str(data.get("new_upstream", "")).strip()
+            delete_old_cert = data.get("delete_old_cert", False)
+            if not new_domain:
+                self.send_json({"error": "缺少new_domain参数"}, 400)
+                return
+            result = rename_site(domain, new_domain, new_upstream, delete_old_cert)
+            self.send_json({"message": "站点已重命名", **result}, 200 if result["code"] == 0 else 500)
             return
 
         if path == "/api/nginx/comment-out":

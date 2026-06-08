@@ -51,8 +51,10 @@ $APP_LABEL v$SCRIPT_VERSION
   host-nginx-manager.sh enable-ssl DOMAIN [--email EMAIL]
   host-nginx-manager.sh renew DOMAIN
   host-nginx-manager.sh disable-ssl DOMAIN
+  host-nginx-manager.sh rename OLD_DOMAIN NEW_DOMAIN [--upstream UPSTREAM] [--delete-old-cert]
   host-nginx-manager.sh set-auto-renew DOMAIN [0|1]
   host-nginx-manager.sh remove DOMAIN [--yes] [--delete-cert]
+  host-nginx-manager.sh diagnose DOMAIN
   host-nginx-manager.sh list
   host-nginx-manager.sh show DOMAIN
   host-nginx-manager.sh test
@@ -590,6 +592,142 @@ cmd_disable_ssl() {
     write_summary
 }
 
+cmd_rename() {
+    local old_domain="$(normalize_domain "${1:-}")"
+    local new_domain="$(normalize_domain "${2:-}")"
+    local new_upstream=""
+    local delete_old_cert=0
+
+    shift 2 || die "用法：rename OLD_DOMAIN NEW_DOMAIN [--upstream UPSTREAM] [--delete-old-cert]"
+
+    # 解析可选参数
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --upstream)
+                new_upstream="${2:-}"
+                shift 2
+                ;;
+            --delete-old-cert)
+                delete_old_cert=1
+                shift
+                ;;
+            *)
+                die "未知参数：$1"
+                ;;
+        esac
+    done
+
+    validate_domain "$old_domain" || die "无效的旧域名：$old_domain"
+    validate_domain "$new_domain" || die "无效的新域名：$new_domain"
+
+    # 检查旧域名是否存在
+    local old_state_file="$(state_file "$old_domain")"
+    [[ -f "$old_state_file" ]] || die "旧域名不存在：$old_domain"
+
+    # 检查新域名是否已存在
+    local new_state_file="$(state_file "$new_domain")"
+    if [[ -f "$new_state_file" ]]; then
+        die "新域名已存在：$new_domain（请先删除或选择其他域名）"
+    fi
+
+    section "重命名站点：$old_domain → $new_domain"
+
+    # 1. 读取旧配置
+    info "读取旧配置..."
+    load_state "$old_domain"
+    local old_upstream="$UPSTREAM"
+    local old_upstream_scheme="$UPSTREAM_SCHEME"
+    local old_enable_ssl="$ENABLE_SSL"
+    local old_certbot_email="$CERTBOT_EMAIL"
+    local old_client_max_body_size="$CLIENT_MAX_BODY_SIZE"
+    local old_proxy_read_timeout="$PROXY_READ_TIMEOUT"
+    local old_proxy_send_timeout="$PROXY_SEND_TIMEOUT"
+    local old_websocket="$WEBSOCKET"
+    local old_backend_insecure="$BACKEND_INSECURE"
+    local old_auto_renew="$AUTO_RENEW"
+
+    info "  后端：$old_upstream_scheme://$old_upstream"
+    info "  HTTPS：$old_enable_ssl"
+
+    # 2. 使用新域名创建站点（保留所有配置）
+    section "创建新站点：$new_domain"
+    DOMAIN="$new_domain"
+    UPSTREAM="${new_upstream:-$old_upstream}"
+    UPSTREAM_SCHEME="$old_upstream_scheme"
+    ENABLE_SSL=0  # 先创建 HTTP 站点
+    CERTBOT_EMAIL="$old_certbot_email"
+    CLIENT_MAX_BODY_SIZE="$old_client_max_body_size"
+    PROXY_READ_TIMEOUT="$old_proxy_read_timeout"
+    PROXY_SEND_TIMEOUT="$old_proxy_send_timeout"
+    WEBSOCKET="$old_websocket"
+    BACKEND_INSECURE="$old_backend_insecure"
+    AUTO_RENEW="$old_auto_renew"
+
+    save_state
+    apply_site || die "创建新站点配置失败"
+    log "HTTP 配置已创建"
+
+    # 3. 如果旧站点启用了 HTTPS，为新站点申请证书
+    if [[ "$old_enable_ssl" == "1" ]]; then
+        section "为新域名申请证书"
+        issue_cert || die "证书申请失败"
+
+        ENABLE_SSL=1
+        save_state
+        apply_site || die "启用 HTTPS 配置失败"
+        log "HTTPS 已启用"
+    fi
+
+    # 4. 删除旧站点配置
+    section "删除旧站点：$old_domain"
+    local old_conf="/etc/nginx/sites-available/${SITE_PREFIX}-${old_domain}.conf"
+    local old_link="/etc/nginx/sites-enabled/${SITE_PREFIX}-${old_domain}.conf"
+
+    if [[ -L "$old_link" ]]; then
+        rm -f "$old_link"
+        log "已删除旧软链接"
+    fi
+
+    if [[ -f "$old_conf" ]]; then
+        rm -f "$old_conf"
+        log "已删除旧配置文件"
+    fi
+
+    if [[ -f "$old_state_file" ]]; then
+        rm -f "$old_state_file"
+        log "已删除旧状态文件"
+    fi
+
+    # 5. 删除旧证书（可选）
+    if [[ "$delete_old_cert" == "1" && "$old_enable_ssl" == "1" ]]; then
+        section "删除旧证书：$old_domain"
+        if certbot delete --cert-name "$old_domain" --non-interactive 2>/dev/null; then
+            log "已删除旧证书"
+        else
+            warn "删除旧证书失败（可能已不存在）"
+        fi
+    elif [[ "$old_enable_ssl" == "1" ]]; then
+        info "旧证书已保留：/etc/letsencrypt/live/$old_domain"
+    fi
+
+    # 6. 重载 nginx
+    section "重载 nginx"
+    if nginx -t 2>&1 | grep -q "test is successful"; then
+        systemctl reload nginx || nginx -s reload
+        log "nginx 已重载"
+    else
+        error "nginx 配置测试失败"
+        nginx -t
+        return 1
+    fi
+
+    section "重命名完成"
+    log "旧域名：$old_domain"
+    log "新域名：$new_domain"
+    log "后端：${new_upstream:-$old_upstream}"
+    write_summary
+}
+
 cmd_remove() {
     DOMAIN="$(normalize_domain "${1:-}")"
     shift || true
@@ -820,6 +958,10 @@ main() {
         disable-ssl)
             [[ $# -eq 1 ]] || die "用法：disable-ssl DOMAIN"
             cmd_disable_ssl "$1"
+            ;;
+        rename)
+            [[ $# -ge 2 ]] || die "用法：rename OLD_DOMAIN NEW_DOMAIN [--upstream UPSTREAM] [--delete-old-cert]"
+            cmd_rename "$@"
             ;;
         remove)
             [[ $# -ge 1 ]] || die "用法：remove DOMAIN [--yes] [--delete-cert]"
