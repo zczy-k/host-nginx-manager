@@ -421,10 +421,14 @@ function renderIssueRows(){
     if (issue.kind === 'dns' && site.importable) {
       const actionSource = String(site.source || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
       actions = `<button class="btn small primary" onclick="importSite('${actionDomain}', '${actionSource}')">先接管</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
+    } else if (issue.kind === 'dns' && (site.imported || site.migrated)) {
+      actions = `<button class="btn small danger" onclick="removeImportedSite('${actionDomain}')">删除失效配置</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
     } else if ((issue.kind === 'cert_warn' || issue.kind === 'cert_bad') && site.managed && !site.imported) {
       actions = site.https
         ? `<button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`
         : `<button class="btn small primary" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
+    } else if (issue.kind === 'backend' && (site.imported || site.migrated)) {
+      actions = `<button class="btn small danger" onclick="removeImportedSite('${actionDomain}')">删除失效配置</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
     }
     const tagClass = issue.severity === 'warn' ? 'warn' : 'bad';
     return `<tr><td><strong>${escapeHtml(issue.domain)}</strong></td><td><span class="tag ${tagClass}">${issueLabel(issue)}</span></td><td>${escapeHtml(issue.detail)}<div class="muted">${escapeHtml(site.source || '-')}</div></td><td class="row">${actions}</td></tr>`;
@@ -512,11 +516,11 @@ function render(){
     const dnsTag = dnsTagHtml(s);
     let actions = '<span class="muted">只读</span>';
     if (s.migrated) {
-      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><span class="muted">原样受管</span>`;
+      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small danger" onclick="removeImportedSite('${actionDomain}')">删除</button>`;
     } else if (s.managed && !s.imported) {
       actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`;
     } else if (s.imported) {
-      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button>${s.migrated ? '<span class="muted">受管文件</span>' : `<button class="btn small" onclick="migrateSite('${actionDomain}')">迁移为受管</button><span class="muted">原配置</span>`}`;
+      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small" onclick="migrateSite('${actionDomain}')">迁移为受管</button><button class="btn small danger" onclick="removeImportedSite('${actionDomain}')">删除</button>`;
     } else if (s.importable) {
       actions = `<button class="btn small primary" onclick="importSite('${actionDomain}', '${actionSource}')">导入/接管</button>`;
     } else if (s.readonly_reason) {
@@ -537,6 +541,7 @@ async function enableSsl(domain){ const email = prompt('证书邮箱，可留空
 async function editSite(domain, currentTarget){ const target = prompt('新的后端地址，例如 127.0.0.1:3002 或 http://127.0.0.1:3002', currentTarget || ''); if(target) await action('/api/sites/update',{domain,target}); }
 async function disableSsl(domain){ if(confirm('确认关闭 HTTPS？')) await action('/api/sites/disable-ssl',{domain}); }
 async function removeSite(domain){ if(confirm('确认删除站点？')) await action('/api/sites/remove',{domain, delete_cert:false}); }
+async function removeImportedSite(domain){ if(confirm('确认删除这个导入/迁移的站点？\n\n操作将：\n1. 删除状态文件\n2. 自动注释原配置（如果可以定位）\n3. 创建备份文件\n\n建议删除前先检查该站点是否还在使用。')) await action('/api/sites/remove-imported',{domain, comment_out:true}); }
 async function importSite(domain, source){ if(confirm('确认导入这个已有反向代理站点？导入不会删除原 nginx 配置。')) await action('/api/sites/import',{domain, source}); }
 async function migrateSite(domain){ if(confirm('确认将这个已接管站点迁移为工具受管配置？会备份并注释原始配置块。')) await action('/api/sites/migrate',{domain}); }
 function useService(target){ document.querySelector('#createForm [name="upstream"]').value = target; document.querySelector('#createForm [name="scheme"]').value = 'http'; switchView('create'); }
@@ -1153,6 +1158,102 @@ def migrate_imported_site(domain: str) -> dict[str, object]:
     return {"code": reload_result["code"], "output": output}
 
 
+def remove_imported_site(domain: str, comment_out: bool = True) -> dict[str, object]:
+    """删除已导入的站点配置，可选择注释或完全删除原配置"""
+    domain = domain.strip().lower()
+    if not DOMAIN_RE.match(domain):
+        return {"code": 2, "output": "域名无效"}
+
+    state_path = STATE_DIR / f"{domain}.env"
+    if not state_path.exists():
+        return {"code": 3, "output": "状态文件不存在"}
+
+    state = parse_state_file(state_path)
+    is_imported = state.get("IMPORTED") == "1"
+    is_migrated = state.get("MIGRATED") == "1"
+
+    if not is_imported and not is_migrated:
+        return {"code": 4, "output": "该站点不是导入/迁移站点，请使用标准删除功能"}
+
+    # 删除状态文件
+    state_path.unlink()
+
+    source = state.get("IMPORTED_SOURCE", "")
+    if not source:
+        return {"code": 0, "output": f"已删除状态文件：{domain}\n原始配置文件未知，请手动检查 nginx 配置"}
+
+    source_path = pathlib.Path(source)
+
+    # 如果是迁移后的受管配置，直接删除
+    if is_migrated and str(source_path).startswith("/etc/nginx/sites-"):
+        try:
+            available_path = pathlib.Path(f"/etc/nginx/sites-available/vpspm-{domain}.conf")
+            enabled_path = pathlib.Path(f"/etc/nginx/sites-enabled/vpspm-{domain}.conf")
+
+            if enabled_path.exists() or enabled_path.is_symlink():
+                enabled_path.unlink()
+            if available_path.exists():
+                available_path.unlink()
+
+            test = run_cmd(["nginx", "-t"], timeout=20)
+            if test["code"] != 0:
+                return {"code": 5, "output": f"删除受管配置后 nginx 校验失败。\n{test['output']}"}
+
+            reload_result = run_cmd(["systemctl", "reload", "nginx"], timeout=20)
+            if reload_result["code"] != 0:
+                reload_result = run_cmd(["nginx", "-s", "reload"], timeout=20)
+
+            return {"code": 0, "output": f"已删除站点：{domain}\n已删除：{available_path}\n{reload_result['output']}".strip()}
+        except Exception as exc:
+            return {"code": 6, "output": f"删除受管配置时出错：{exc}"}
+
+    # 对于导入的配置，尝试注释掉原始配置
+    if not source_path.is_file():
+        return {"code": 0, "output": f"已删除状态文件：{domain}\n原配置文件不存在：{source}"}
+
+    if not str(source_path).startswith("/etc/nginx/"):
+        return {"code": 7, "output": f"原配置文件不在 /etc/nginx/ 目录，不自动修改：{source}"}
+
+    # 尝试找到并注释配置块
+    lines = source_path.read_text(encoding="utf-8").splitlines()
+    start, end = find_imported_server_block(lines, domain)
+
+    if start < 0:
+        # 可能是在 stream 块或其他位置，尝试简单搜索
+        found_lines = []
+        for idx, line in enumerate(lines):
+            if domain in line:
+                found_lines.append(f"行 {idx + 1}: {line.strip()}")
+
+        hint = "\n".join(found_lines[:5]) if found_lines else "未找到"
+        return {"code": 0, "output": f"已删除状态文件：{domain}\n\n无法自动定位配置块，请手动编辑：{source}\n可能的位置：\n{hint}"}
+
+    if comment_out:
+        # 注释掉配置块
+        commented_lines = lines[:]
+        for index in range(start, end + 1):
+            if not lines[index].strip().startswith("#"):
+                commented_lines[index] = f"# REMOVED: {lines[index]}"
+
+        backup_path = source_path.with_name(f"{source_path.name}.bak-{int(time.time())}")
+        original = source_path.read_text(encoding="utf-8")
+        backup_path.write_text(original, encoding="utf-8")
+        source_path.write_text("\n".join(commented_lines) + "\n", encoding="utf-8")
+
+        test = run_cmd(["nginx", "-t"], timeout=20)
+        if test["code"] != 0:
+            source_path.write_text(original, encoding="utf-8")
+            return {"code": 8, "output": f"注释配置后 nginx 校验失败，已回滚。\n{test['output']}"}
+
+        reload_result = run_cmd(["systemctl", "reload", "nginx"], timeout=20)
+        if reload_result["code"] != 0:
+            reload_result = run_cmd(["nginx", "-s", "reload"], timeout=20)
+
+        return {"code": 0, "output": f"已删除站点：{domain}\n已注释原配置：{source} (行 {start+1}-{end+1})\n备份：{backup_path}\n{reload_result['output']}".strip()}
+    else:
+        return {"code": 0, "output": f"已删除状态文件：{domain}\n请手动编辑配置文件删除相关配置：{source} (行 {start+1}-{end+1})"}
+
+
 def run_cmd(args: list[str], timeout: int = 90) -> dict[str, object]:
     try:
         proc = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
@@ -1346,6 +1447,12 @@ class Handler(BaseHTTPRequestHandler):
                 args.append("--delete-cert")
             result = run_cmd(args, timeout=90)
             self.send_json({"message": "站点已删除", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/sites/remove-imported":
+            comment_out = data.get("comment_out", True)
+            result = remove_imported_site(domain, comment_out)
+            self.send_json({"message": "已删除导入站点", **result}, 200 if result["code"] == 0 else 400)
             return
 
         self.send_error(404)
