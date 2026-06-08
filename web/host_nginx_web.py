@@ -1584,7 +1584,13 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
     managed = bool(managed_domain or re.search(r"/vpspm-[^/]+\.conf$", source))
     display_name = managed_domain or (names[0] if names else "(默认站点)")
     upstream = proxy_passes[0] if proxy_passes else ""
-    https = has_ssl_cert or any("ssl" in item or ":443" in item or item.startswith("443") for item in listens)
+
+    # 修复 HTTPS 判断：受管站点从状态文件读取，非受管站点从配置判断
+    if managed and managed_state:
+        https = managed_state.get("ENABLE_SSL") == "1"
+    else:
+        https = has_ssl_cert or any("ssl" in item or ":443" in item or item.startswith("443") for item in listens)
+
     import_domain = next((name for name in names if DOMAIN_RE.match(name)), "")
     upstream_scheme, upstream_target = split_proxy_upstream(upstream)
 
