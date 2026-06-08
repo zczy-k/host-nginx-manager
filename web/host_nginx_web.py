@@ -33,7 +33,8 @@ SECRET = os.environ.get("HNG_WEB_SECRET", "") or secrets.token_urlsafe(32)
 COOKIE_NAME = "hng_session"
 SESSION_TTL = 12 * 60 * 60
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z0-9.-]+$")
-CERT_WARN_DAYS = 30
+CERT_WARN_DAYS = int(os.environ.get("HNG_CERT_WARN_DAYS", "30"))
+CERT_CRITICAL_DAYS = int(os.environ.get("HNG_CERT_CRITICAL_DAYS", "7"))
 
 PAGE_CSS = r'''
   <style>
@@ -93,6 +94,22 @@ PAGE_CSS = r'''
     .login { min-height:100vh; display:grid; place-items:center; padding:24px; }
     .login .panel { width:min(420px,100%); }
     .login-message { margin:12px 0; }
+    details { margin:12px 0; }
+    summary { cursor:pointer; padding:10px; background:#f6f7f9; border-radius:6px; font-weight:600; user-select:none; }
+    details[open] summary { margin-bottom:12px; }
+    .help-content { line-height:1.7; }
+    .help-content h3 { margin:18px 0 10px; font-size:15px; }
+    .help-content code { background:#f1f3f5; padding:2px 6px; border-radius:3px; font-size:13px; }
+    .help-content pre { background:#101828; color:#e5e7eb; padding:12px; border-radius:6px; overflow:auto; }
+    .modal-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center; }
+    .modal-overlay.active { display:flex; }
+    .modal { background:#fff; border-radius:8px; max-width:90vw; max-height:90vh; overflow:auto; box-shadow:0 10px 40px rgba(0,0,0,0.2); }
+    .modal-header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
+    .modal-body { padding:20px; }
+    .modal-close { cursor:pointer; font-size:24px; color:var(--muted); }
+    .cert-detail-grid { display:grid; gap:12px; }
+    .cert-detail-row { display:grid; grid-template-columns:140px 1fr; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); }
+    .cert-detail-label { font-weight:600; color:var(--muted); }
     @media (max-width:860px) { .shell { grid-template-columns:1fr; } aside { position:sticky; top:0; z-index:5; } .nav { display:flex; overflow:auto; } .nav button { white-space:nowrap; } .stats,.form-grid,.dashboard-grid { grid-template-columns:1fr; } .toolbar input,.toolbar select { width:100%; } main { padding:16px; } }
   </style>
 '''
@@ -160,6 +177,7 @@ APP_HTML = r'''<!doctype html>
       <button data-view="certs">证书</button>
       <button data-view="create">新增反代</button>
       <button data-view="tools">维护</button>
+      <button data-view="help">帮助</button>
     </nav>
   </aside>
   <main>
@@ -267,7 +285,201 @@ APP_HTML = r'''<!doctype html>
         <div class="panel"><h2>输出</h2><pre id="output">等待操作...</pre></div>
       </div>
     </section>
+    <section id="help" class="view">
+      <div class="panel help-content">
+        <h1>Host Nginx Manager 使用帮助</h1>
+        <p>这是一个轻量级的 Nginx 反向代理管理工具，帮助你快速配置和管理 Let's Encrypt HTTPS 证书。</p>
+
+        <details>
+          <summary>📖 快速开始</summary>
+          <h3>1. 新增反向代理</h3>
+          <p>点击左侧"新增反代"，填写域名和后端地址：</p>
+          <ul>
+            <li><strong>域名</strong>：如 <code>api.example.com</code></li>
+            <li><strong>后端地址</strong>：如 <code>127.0.0.1:3001</code></li>
+            <li><strong>后端协议</strong>：通常选择 <code>http</code></li>
+            <li><strong>邮箱</strong>：用于 Let's Encrypt 证书申请通知</li>
+          </ul>
+          <p>勾选"立即申请证书"后点击创建，工具会自动完成：</p>
+          <ol>
+            <li>创建 nginx 配置文件</li>
+            <li>申请 Let's Encrypt 证书</li>
+            <li>配置 HTTPS 并自动跳转</li>
+            <li>测试并重载 nginx</li>
+          </ol>
+
+          <h3>2. 管理现有站点</h3>
+          <p>在"站点"视图中可以：</p>
+          <ul>
+            <li>编辑后端地址</li>
+            <li>启用/关闭 HTTPS</li>
+            <li>删除站点</li>
+            <li>导入已有配置</li>
+          </ul>
+        </details>
+
+        <details>
+          <summary>🔒 证书管理</summary>
+          <h3>证书状态说明</h3>
+          <ul>
+            <li><span class="tag ok">证书 N 天</span> - 证书正常，剩余 N 天有效期</li>
+            <li><span class="tag warn">证书 N 天</span> - 证书即将过期（30天内）</li>
+            <li><span class="tag bad">证书异常</span> - 证书缺失或读取失败</li>
+          </ul>
+
+          <h3>证书续期</h3>
+          <p>证书快要过期时，在"证书"视图中找到对应域名，点击"查看详情"可以看到：</p>
+          <ul>
+            <li>证书颁发者</li>
+            <li>有效期</li>
+            <li>SAN（备用域名）</li>
+          </ul>
+          <p>点击"续期"按钮即可手动续期证书。Let's Encrypt 证书也会在到期前自动续期。</p>
+
+          <h3>DNS 配置</h3>
+          <p>申请证书前，请确保域名的 DNS 记录已指向本服务器 IP：</p>
+          <ul>
+            <li><span class="tag ok">DNS 正常</span> - 域名已正确解析到本机</li>
+            <li><span class="tag bad">DNS 异常</span> - 域名未指向本机或解析失败</li>
+          </ul>
+        </details>
+
+        <details>
+          <summary>🔧 功能说明</summary>
+          <h3>概览</h3>
+          <p>显示 nginx 状态、站点统计、问题汇总。快速发现需要处理的异常。</p>
+
+          <h3>问题</h3>
+          <p>集中显示所有需要处理的问题：</p>
+          <ul>
+            <li>后端服务连接失败</li>
+            <li>证书即将过期或缺失</li>
+            <li>DNS 未正确解析</li>
+          </ul>
+
+          <h3>站点</h3>
+          <p>管理所有 nginx 站点配置。支持筛选和搜索。分为：</p>
+          <ul>
+            <li><span class="tag ok">受管</span> - 由本工具创建和管理</li>
+            <li><span class="tag ok">已接管</span> - 从现有配置导入，可编辑</li>
+            <li><span class="tag">已有</span> - 现有 nginx 配置，只读</li>
+          </ul>
+
+          <h3>本机服务</h3>
+          <p>自动发现本机监听的端口，快速为其创建反向代理。</p>
+
+          <h3>证书</h3>
+          <p>专注于 HTTPS 证书管理，查看所有证书状态、有效期。</p>
+
+          <h3>维护</h3>
+          <p>测试 nginx 配置、重载服务。所有修改操作都会自动测试配置并在失败时回滚。</p>
+        </details>
+
+        <details>
+          <summary>⚠️ 故障排除</summary>
+          <h3>证书申请失败</h3>
+          <p><strong>常见原因：</strong></p>
+          <ul>
+            <li>DNS 未指向本服务器</li>
+            <li>80 端口未开放或被防火墙拦截</li>
+            <li>Let's Encrypt 速率限制（每域名每周 5 次）</li>
+          </ul>
+          <p><strong>解决方法：</strong></p>
+          <ol>
+            <li>在"站点"或"证书"视图检查 DNS 状态</li>
+            <li>确认云厂商安全组开放 80 和 443 端口</li>
+            <li>如触发速率限制，等待一周后重试</li>
+          </ol>
+
+          <h3>后端连接失败</h3>
+          <p><strong>可能原因：</strong></p>
+          <ul>
+            <li>后端服务未启动</li>
+            <li>端口号错误</li>
+            <li>防火墙阻止本地连接</li>
+          </ul>
+          <p><strong>检查方法：</strong></p>
+          <pre>ss -lntp | grep :端口号
+curl http://127.0.0.1:端口号</pre>
+
+          <h3>nginx 重载失败</h3>
+          <p>工具会自动回滚到上一个有效配置。查看"维护"视图的输出了解具体错误。</p>
+
+          <h3>删除失效配置</h3>
+          <p>如果域名已过期或服务已停止，在"问题"视图中点击"删除失效配置"可以安全清理。操作会：</p>
+          <ul>
+            <li>删除状态文件</li>
+            <li>注释原始 nginx 配置</li>
+            <li>创建备份文件</li>
+          </ul>
+        </details>
+
+        <details>
+          <summary>📚 API 文档</summary>
+          <h3>站点管理</h3>
+          <ul>
+            <li><code>POST /api/sites/add</code> - 新增站点</li>
+            <li><code>POST /api/sites/update</code> - 更新站点后端</li>
+            <li><code>POST /api/sites/remove</code> - 删除站点</li>
+            <li><code>POST /api/sites/import</code> - 导入现有站点</li>
+            <li><code>POST /api/sites/migrate</code> - 迁移为受管站点</li>
+            <li><code>POST /api/sites/remove-imported</code> - 删除导入的站点</li>
+          </ul>
+
+          <h3>证书管理</h3>
+          <ul>
+            <li><code>POST /api/sites/enable-ssl</code> - 启用 HTTPS</li>
+            <li><code>POST /api/sites/disable-ssl</code> - 关闭 HTTPS</li>
+            <li><code>POST /api/certs/renew</code> - 续期证书</li>
+            <li><code>GET /api/certs/detail?domain=xxx</code> - 查看证书详情</li>
+          </ul>
+
+          <h3>系统</h3>
+          <ul>
+            <li><code>GET /api/status</code> - 获取系统状态</li>
+            <li><code>POST /api/nginx/test</code> - 测试 nginx 配置</li>
+            <li><code>POST /api/nginx/reload</code> - 重载 nginx</li>
+          </ul>
+        </details>
+
+        <details>
+          <summary>❓ 常见问题</summary>
+          <h3>Q: 工具会修改我现有的 nginx 配置吗？</h3>
+          <p>A: 不会。工具只管理它自己创建的站点（文件名包含 <code>vpspm-</code>）。现有的 stream、ssl_preread 等手写配置不会被修改。</p>
+
+          <h3>Q: 可以管理非 HTTP 协议吗？</h3>
+          <p>A: 不建议。工具专注于标准的 HTTP/HTTPS 反向代理。TCP/UDP 转发、Rathole 等建议手动维护。</p>
+
+          <h3>Q: 证书会自动续期吗？</h3>
+          <p>A: 是的。Let's Encrypt 证书通常由 certbot 的 systemd timer 自动续期。你也可以手动续期。</p>
+
+          <h3>Q: 删除站点会删除证书吗？</h3>
+          <p>A: 默认不会。如需同时删除证书，使用"删除"时会提示选项。</p>
+
+          <h3>Q: 支持自定义证书吗？</h3>
+          <p>A: 当前版本专注于 Let's Encrypt。如需自定义证书，建议手动配置 nginx。</p>
+
+          <h3>Q: 如何备份配置？</h3>
+          <p>A: 所有状态保存在 <code>/etc/nginx/vps-proxy-manager/sites/</code>。定期备份该目录和 nginx 配置即可。</p>
+        </details>
+
+        <div style="margin-top:24px; padding-top:24px; border-top:1px solid var(--line); color:var(--muted);">
+          <p>需要帮助？查看 <a href="https://github.com/zczy-k/host-nginx-manager" target="_blank" style="color:var(--blue);">GitHub 项目</a> 或提交 Issue。</p>
+        </div>
+      </div>
+    </section>
   </main>
+</div>
+<div id="certModal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="certModalTitle">证书详情</h2>
+      <span class="modal-close" onclick="closeCertModal()">&times;</span>
+    </div>
+    <div class="modal-body">
+      <div id="certModalContent">加载中...</div>
+    </div>
+  </div>
 </div>
 <script>
 let state = null;
@@ -275,8 +487,8 @@ let siteQuery = '';
 let siteFilter = 'all';
 let certQuery = '';
 let certFilter = 'all';
-const VIEW_TITLES = {dashboard:'概览',issues:'问题',sites:'站点',services:'本机服务',certs:'证书',create:'新增反代',tools:'维护'};
-const CERT_WARN_STATES = new Set(['warn','missing','error']);
+const VIEW_TITLES = {dashboard:'概览',issues:'问题',sites:'站点',services:'本机服务',certs:'证书',create:'新增反代',tools:'维护',help:'帮助'};
+const CERT_WARN_STATES = new Set(['warn','missing','error','critical']);
 const $ = (s) => document.querySelector(s);
 function showMsg(text, type='info'){
   $('#message').innerHTML = text ? `<div class="panel"><span class="tag ${type}">${type}</span> ${escapeHtml(text)}</div>` : '';
@@ -467,12 +679,14 @@ function renderCertificateRows(){
         ? `<span class="tag ok">证书${s.cert_days ?? '-'}天</span>`
         : (s.cert_status === 'warn'
           ? `<span class="tag warn">证书${s.cert_days ?? '-'}天</span>`
-          : '<span class="tag bad">证书异常</span>'));
+          : (s.cert_status === 'critical'
+            ? `<span class="tag bad">证书${s.cert_days ?? '-'}天</span>`
+            : '<span class="tag bad">证书异常</span>')));
     const statusDetail = (s.https ? (s.cert_info || '已启用 HTTPS') : (s.managed && !s.imported ? '可直接申请证书' : '当前仅 HTTP')) + (s.dns_detail ? ` | DNS: ${s.dns_detail}` : '');
     let actions = `<button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
     if (s.managed && !s.imported) {
       actions = s.https
-        ? `<button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`
+        ? `<button class="btn small" onclick="viewCert('${actionDomain}')">查看详情</button><button class="btn small" onclick="renewCert('${actionDomain}')">续期</button><button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`
         : `<button class="btn small primary" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
     } else if (s.importable) {
       actions = `<button class="btn small primary" onclick="importSite('${actionDomain}', '${actionSource}')">先接管</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
@@ -512,7 +726,9 @@ function render(){
       ? `<span class="tag ok">证书${s.cert_days ?? '-'}天</span>`
       : (s.cert_status === 'warn'
         ? `<span class="tag warn">证书${s.cert_days ?? '-'}天</span>`
-        : (s.cert_status === 'missing' || s.cert_status === 'error' ? '<span class="tag bad">证书异常</span>' : ''));
+        : (s.cert_status === 'critical'
+          ? `<span class="tag bad">证书${s.cert_days ?? '-'}天</span>`
+          : (s.cert_status === 'missing' || s.cert_status === 'error' ? '<span class="tag bad">证书异常</span>' : '')));
     const dnsTag = dnsTagHtml(s);
     let actions = '<span class="muted">只读</span>';
     if (s.migrated) {
@@ -544,6 +760,45 @@ async function removeSite(domain){ if(confirm('确认删除站点？')) await ac
 async function removeImportedSite(domain){ if(confirm('确认删除这个导入/迁移的站点？\n\n操作将：\n1. 删除状态文件\n2. 自动注释原配置（如果可以定位）\n3. 创建备份文件\n\n建议删除前先检查该站点是否还在使用。')) await action('/api/sites/remove-imported',{domain, comment_out:true}); }
 async function importSite(domain, source){ if(confirm('确认导入这个已有反向代理站点？导入不会删除原 nginx 配置。')) await action('/api/sites/import',{domain, source}); }
 async function migrateSite(domain){ if(confirm('确认将这个已接管站点迁移为工具受管配置？会备份并注释原始配置块。')) await action('/api/sites/migrate',{domain}); }
+async function renewCert(domain){ if(confirm('确认续期该域名的证书？\n\n这将重新向 Let\'s Encrypt 申请证书，通常在证书即将过期时使用。')) await action('/api/certs/renew',{domain}); }
+async function viewCert(domain){
+  try {
+    const data = await api('/api/certs/detail?domain=' + encodeURIComponent(domain));
+    showCertDetail(data);
+  } catch(err) {
+    showMsg(err.message, 'bad');
+  }
+}
+function showCertDetail(data) {
+  const modal = document.getElementById('certModal');
+  const title = document.getElementById('certModalTitle');
+  const content = document.getElementById('certModalContent');
+
+  title.textContent = `证书详情 - ${data.domain}`;
+
+  if (data.status === 'error' || data.status === 'missing') {
+    content.innerHTML = `<div class="notice" style="border-left-color:var(--red);background:#fdecec;color:var(--red);">${escapeHtml(data.error || '证书不可用')}</div>`;
+  } else {
+    const statusColors = {ok:'var(--green)', warn:'var(--amber)', critical:'var(--red)'};
+    const statusLabels = {ok:'正常', warn:'即将过期', critical:'紧急'};
+    content.innerHTML = `
+      <div class="cert-detail-grid">
+        <div class="cert-detail-row"><div class="cert-detail-label">状态</div><div><span class="tag ${data.status}">${statusLabels[data.status] || data.status}</span> 剩余 ${data.days_left} 天</div></div>
+        <div class="cert-detail-row"><div class="cert-detail-label">有效期</div><div>${escapeHtml(data.not_before)} 至 ${escapeHtml(data.not_after)}</div></div>
+        <div class="cert-detail-row"><div class="cert-detail-label">颁发者</div><div style="word-break:break-all;">${escapeHtml(data.issuer)}</div></div>
+        <div class="cert-detail-row"><div class="cert-detail-label">使用者</div><div style="word-break:break-all;">${escapeHtml(data.subject)}</div></div>
+        <div class="cert-detail-row"><div class="cert-detail-label">序列号</div><div style="font-family:monospace;">${escapeHtml(data.serial)}</div></div>
+        <div class="cert-detail-row"><div class="cert-detail-label">SAN</div><div>${data.san && data.san.length ? data.san.map(escapeHtml).join(', ') : '-'}</div></div>
+        <div class="cert-detail-row"><div class="cert-detail-label">证书路径</div><div style="word-break:break-all;font-family:monospace;font-size:12px;">${escapeHtml(data.cert_path)}</div></div>
+      </div>
+    `;
+  }
+
+  modal.classList.add('active');
+}
+function closeCertModal() {
+  document.getElementById('certModal').classList.remove('active');
+}
 function useService(target){ document.querySelector('#createForm [name="upstream"]').value = target; document.querySelector('#createForm [name="scheme"]').value = 'http'; switchView('create'); }
 $('#logoutBtn').onclick = async()=>{ await api('/api/logout',{method:'POST',body:'{}'}); window.location.replace('/login'); };
 $('#refreshBtn').onclick = ()=>load().catch(e=>showMsg(e.message,'bad'));
@@ -558,6 +813,7 @@ $('#certFilter').addEventListener('change', e => { certFilter = e.target.value; 
 $('#certSearchClear').onclick = () => { certQuery = ''; certFilter = 'all'; $('#certSearch').value = ''; $('#certFilter').value = 'all'; render(); };
 $('#createForm').addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(e.target); const body = {domain:f.get('domain'), upstream:f.get('upstream'), scheme:f.get('scheme'), email:f.get('email'), ssl:f.has('ssl'), body:f.get('body'), readTimeout:f.get('readTimeout'), backendInsecure:f.has('backendInsecure')}; try { await action('/api/sites/add', body); e.target.reset(); } catch(err){ showMsg(err.message,'bad'); $('#output').textContent = err.message; } });
 document.querySelectorAll('.nav button,[data-jump]').forEach(b => b.onclick = () => switchView(b.dataset.view||b.dataset.jump));
+document.getElementById('certModal').onclick = (e) => { if(e.target.id === 'certModal') closeCertModal(); };
 load().catch(e=>showMsg(e.message,'bad'));
 </script>
 </body>
@@ -623,6 +879,67 @@ def check_backend_target(target: str) -> tuple[str, str]:
         return "bad", str(exc)
 
 
+def read_certificate_detail(cert_path: str) -> dict[str, object]:
+    """读取证书的详细信息，包括颁发者、使用者、SAN等"""
+    if not cert_path:
+        return {"status": "none", "error": "未提供证书路径"}
+
+    path = pathlib.Path(cert_path)
+    if not path.is_file():
+        return {"status": "missing", "error": f"证书文件不存在: {cert_path}"}
+
+    try:
+        info = ssl._ssl._test_decode_cert(str(path))
+        expires = datetime.strptime(info["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+        not_before = datetime.strptime(info["notBefore"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+        days_left = max(0, int((expires - datetime.now(timezone.utc)).total_seconds() // 86400))
+
+        # 解析 SAN (Subject Alternative Names)
+        san_list = []
+        if "subjectAltName" in info:
+            for item in info["subjectAltName"]:
+                if item[0] == "DNS":
+                    san_list.append(item[1])
+
+        # 解析颁发者
+        issuer_parts = []
+        if "issuer" in info:
+            for item in info["issuer"]:
+                for part in item:
+                    issuer_parts.append(f"{part[0]}={part[1]}")
+        issuer = ", ".join(issuer_parts) if issuer_parts else "Unknown"
+
+        # 解析使用者
+        subject_parts = []
+        if "subject" in info:
+            for item in info["subject"]:
+                for part in item:
+                    subject_parts.append(f"{part[0]}={part[1]}")
+        subject = ", ".join(subject_parts) if subject_parts else "Unknown"
+
+        # 证书状态
+        if days_left <= CERT_CRITICAL_DAYS:
+            cert_status = "critical"
+        elif days_left <= CERT_WARN_DAYS:
+            cert_status = "warn"
+        else:
+            cert_status = "ok"
+
+        return {
+            "status": cert_status,
+            "days_left": days_left,
+            "not_before": not_before.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "not_after": expires.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "issuer": issuer,
+            "subject": subject,
+            "san": san_list,
+            "serial": info.get("serialNumber", "Unknown"),
+            "version": info.get("version", "Unknown"),
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
 def read_certificate_status(cert_path: str) -> tuple[str, int | None, str]:
     if not cert_path:
         return "none", None, ""
@@ -633,7 +950,16 @@ def read_certificate_status(cert_path: str) -> tuple[str, int | None, str]:
         info = ssl._ssl._test_decode_cert(str(path))
         expires = datetime.strptime(info["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
         days_left = max(0, int((expires - datetime.now(timezone.utc)).total_seconds() // 86400))
-        return ("warn" if days_left <= CERT_WARN_DAYS else "ok"), days_left, expires.strftime("%Y-%m-%d")
+
+        # 使用新的阈值判断
+        if days_left <= CERT_CRITICAL_DAYS:
+            status = "critical"
+        elif days_left <= CERT_WARN_DAYS:
+            status = "warn"
+        else:
+            status = "ok"
+
+        return status, days_left, expires.strftime("%Y-%m-%d")
     except Exception:
         return "error", None, cert_path
 
@@ -1350,6 +1676,38 @@ class Handler(BaseHTTPRequestHandler):
                 "port": PORT,
             })
             return
+
+        if path.startswith("/api/certs/detail"):
+            if not self.require_auth():
+                return
+            query = urlparse(self.path).query
+            domain = ""
+            for part in query.split("&"):
+                if part.startswith("domain="):
+                    domain = part.split("=", 1)[1]
+            if not domain:
+                self.send_json({"error": "缺少 domain 参数"}, 400)
+                return
+
+            # 查找证书路径
+            servers = list_nginx_servers()
+            server = next((s for s in servers if s.get("domain") == domain or s.get("managed_domain") == domain), None)
+            if not server:
+                self.send_json({"error": "未找到该站点"}, 404)
+                return
+
+            cert_path = str(server.get("ssl_cert_path") or "")
+            if not cert_path and server.get("https"):
+                cert_path = f"/etc/letsencrypt/live/{domain}/fullchain.pem"
+
+            if not cert_path:
+                self.send_json({"error": "该站点未配置证书"}, 400)
+                return
+
+            detail = read_certificate_detail(cert_path)
+            self.send_json({"domain": domain, "cert_path": cert_path, **detail})
+            return
+
         self.send_error(404)
 
     def do_POST(self) -> None:
@@ -1453,6 +1811,11 @@ class Handler(BaseHTTPRequestHandler):
             comment_out = data.get("comment_out", True)
             result = remove_imported_site(domain, comment_out)
             self.send_json({"message": "已删除导入站点", **result}, 200 if result["code"] == 0 else 400)
+            return
+
+        if path == "/api/certs/renew":
+            result = run_cmd([MANAGER_BIN, "renew", domain], timeout=180)
+            self.send_json({"message": "证书续期完成", **result}, 200 if result["code"] == 0 else 500)
             return
 
         self.send_error(404)

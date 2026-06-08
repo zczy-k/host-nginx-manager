@@ -48,6 +48,7 @@ $APP_LABEL v$SCRIPT_VERSION
   host-nginx-manager.sh add DOMAIN UPSTREAM [选项]
   host-nginx-manager.sh update DOMAIN UPSTREAM [选项]
   host-nginx-manager.sh enable-ssl DOMAIN [--email EMAIL]
+  host-nginx-manager.sh renew DOMAIN
   host-nginx-manager.sh disable-ssl DOMAIN
   host-nginx-manager.sh remove DOMAIN [--yes] [--delete-cert]
   host-nginx-manager.sh list
@@ -77,6 +78,7 @@ $APP_LABEL v$SCRIPT_VERSION
   host-nginx-manager.sh update api.example.com 127.0.0.1:3002 --upstream-scheme http
   host-nginx-manager.sh add metapi.cni.de5.net 127.0.0.1:3001 --upstream-scheme http --no-ssl
   host-nginx-manager.sh enable-ssl metapi.cni.de5.net --email you@example.com
+  host-nginx-manager.sh renew metapi.cni.de5.net
   host-nginx-manager.sh remove api.example.com --delete-cert --yes
 EOF
 }
@@ -467,6 +469,18 @@ cmd_enable_ssl() {
     write_summary
 }
 
+cmd_renew() {
+    DOMAIN="$(normalize_domain "${1:-}")"
+    validate_domain "$DOMAIN" || die "无效域名：$DOMAIN"
+    load_state "$DOMAIN"
+    [[ "$ENABLE_SSL" == "1" ]] || die "该站点当前未启用 HTTPS，无法续期证书"
+
+    section "续期证书"
+    issue_cert || die "certbot 证书续期失败"
+    apply_site || die "续期后重新加载 HTTPS 配置失败"
+    write_summary
+}
+
 cmd_disable_ssl() {
     DOMAIN="$(normalize_domain "${1:-}")"
     validate_domain "$DOMAIN" || die "无效域名：$DOMAIN"
@@ -580,6 +594,10 @@ main() {
         enable-ssl)
             [[ $# -ge 1 ]] || die "用法：enable-ssl DOMAIN [--email EMAIL]"
             cmd_enable_ssl "$@"
+            ;;
+        renew)
+            [[ $# -eq 1 ]] || die "用法：renew DOMAIN"
+            cmd_renew "$1"
             ;;
         disable-ssl)
             [[ $# -eq 1 ]] || die "用法：disable-ssl DOMAIN"
