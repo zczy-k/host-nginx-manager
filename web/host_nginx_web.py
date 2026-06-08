@@ -810,7 +810,26 @@ async function editSite(domain, currentTarget){ const target = prompt('新的后
 async function disableSsl(domain){ if(confirm('确认关闭 HTTPS？')) await action('/api/sites/disable-ssl',{domain}); }
 async function removeSite(domain){ if(confirm('⚠️ 确认删除这个站点？\n\n操作将：\n✓ 立即停止网站运行\n✓ 删除nginx配置文件\n✓ 自动创建备份\n✓ 保留SSL证书\n\n提示：可在"维护"界面恢复已删除的站点。')) await action('/api/sites/remove',{domain, delete_cert:false}); }
 async function commentOutConfig(domain, source){ if(confirm(`确认注释掉这个nginx配置？\n\n域名: ${domain}\n配置文件: ${source}\n\n操作将：\n1. 注释掉该server块\n2. 创建备份文件\n3. 重载nginx\n\n该配置不会被删除，只是被注释。`)) await action('/api/nginx/comment-out',{domain, source}); }
-async function takeOverSite(domain, source){ if(confirm(`确认纳入管理？\n\n域名: ${domain}\n\n操作将自动完成：\n✓ 创建工具受管配置\n✓ 注释原始nginx配置\n✓ 保持网站正常运行\n✓ 可立即编辑和管理证书\n\n纳入后可随时编辑、删除此站点。`)) await action('/api/sites/take-over',{domain, source}); }
+async function takeOverSite(domain, source){
+  if(confirm(`🎯 确认纳入管理？
+
+域名: ${domain}
+
+操作将自动完成：
+✓ 创建标准的受管配置
+✓ 复用现有SSL证书（如果有）
+✓ 使用统一的ACME验证目录
+✓ 注释原始nginx配置（保留备份）
+✓ 网站保持正常运行（无缝切换）
+
+纳入后的好处：
+✓ 可在界面编辑后端地址
+✓ 可管理SSL证书和自动续期
+✓ 可随时删除（自动备份恢复）
+✓ 配置格式标准化
+
+确认继续？`)) await action('/api/sites/take-over',{domain, source});
+}
 async function renewCert(domain){ if(confirm('确认续期该域名的证书？\n\n这将重新向 Let\'s Encrypt 申请证书，通常在证书即将过期时使用。')) await action('/api/certs/renew',{domain}); }
 async function setAutoRenew(domain, enable) {
   try {
@@ -1415,9 +1434,20 @@ def take_over_site(domain: str, source: str) -> dict[str, object]:
     if upstream_scheme not in {"http", "https"} or not re.match(r"^[^/:]+:\d+$", upstream_target):
         return {"code": 5, "output": "只支持纳入明确的 http/https HOST:PORT 反向代理"}
 
+    # 检查是否有现有证书
+    has_existing_cert = server.get("https") and pathlib.Path(f"/etc/letsencrypt/live/{domain}").exists()
+
     # 使用管理脚本创建受管配置
     args = [MANAGER_BIN, "add", domain, upstream_target, "--upstream-scheme", upstream_scheme]
-    if not server.get("https"):
+
+    if has_existing_cert:
+        # 有现有证书，直接启用SSL（复用证书）
+        pass  # 默认就是启用SSL
+    elif server.get("https"):
+        # 有HTTPS但证书文件不存在，先不启用SSL
+        args.append("--no-ssl")
+    else:
+        # 原本就是HTTP站点，不启用SSL
         args.append("--no-ssl")
 
     result = run_cmd(args, timeout=120)
@@ -1426,13 +1456,28 @@ def take_over_site(domain: str, source: str) -> dict[str, object]:
 
     # 注释原配置
     source_path = pathlib.Path(source)
+    comment_status = ""
     if source_path.is_file() and str(source_path).startswith("/etc/nginx/"):
         comment_result = comment_out_nginx_config(domain, source)
-        if comment_result["code"] != 0:
-            return {"code": 0, "output": f"已纳入管理：{domain}\n但原配置注释失败，请手动检查：{source}"}
-        return {"code": 0, "output": f"已纳入管理：{domain} -> {upstream_scheme}://{upstream_target}\n原配置已注释：{source}"}
+        if comment_result["code"] == 0:
+            comment_status = f"\n✓ 原配置已注释：{source}"
+        else:
+            comment_status = f"\n⚠ 原配置注释失败，请手动检查：{source}"
 
-    return {"code": 0, "output": f"已纳入管理：{domain} -> {upstream_scheme}://{upstream_target}"}
+    # 构建成功消息
+    output_parts = [f"✓ 已纳入管理：{domain} -> {upstream_scheme}://{upstream_target}"]
+
+    if has_existing_cert:
+        output_parts.append("✓ 已复用现有SSL证书")
+    elif server.get("https"):
+        output_parts.append("⚠ 证书文件缺失，已创建HTTP配置，请手动启用HTTPS")
+
+    if comment_status:
+        output_parts.append(comment_status.strip())
+
+    output_parts.append("\n提示：现在可以在界面上编辑、删除此站点")
+
+    return {"code": 0, "output": "\n".join(output_parts)}
 
 
 def find_imported_server_block(lines: list[str], domain: str) -> tuple[int, int]:
@@ -1595,10 +1640,22 @@ def remove_site_with_backup(domain: str, delete_cert: bool = False) -> dict[str,
 
     result = run_cmd(args, timeout=90)
 
+    # 构建友好的输出信息
     if result["code"] == 0:
-        return {"code": 0, "output": f"已删除站点：{domain}\n备份已保存：{backup_file}\n{result['output']}"}
+        output_parts = [
+            f"✓ 已删除站点：{domain}",
+            f"✓ 备份文件：{backup_file}",
+            "",
+            "如需恢复，请运行：",
+            f"  sudo tar -xzf {backup_file} -C /tmp/",
+            f"  sudo cp /tmp/{domain}.env {STATE_DIR}/",
+            f"  sudo cp /tmp/vpspm-{domain}.conf /etc/nginx/sites-available/",
+            f"  sudo ln -sf /etc/nginx/sites-available/vpspm-{domain}.conf /etc/nginx/sites-enabled/",
+            "  sudo nginx -t && sudo systemctl reload nginx",
+        ]
+        return {"code": 0, "output": "\n".join(output_parts)}
     else:
-        return {"code": 4, "output": f"删除失败：\n{result['output']}\n备份已保存：{backup_file}"}
+        return {"code": 4, "output": f"删除失败：\n{result['output']}\n\n备份已保存：{backup_file}"}
 
 
 def run_cmd(args: list[str], timeout: int = 90) -> dict[str, object]:
