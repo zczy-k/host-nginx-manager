@@ -233,7 +233,7 @@ APP_HTML = r'''<!doctype html>
     </section>
     <section id="sites" class="view">
       <div class="panel">
-        <div class="row"><h2>Nginx 站点</h2><span class="spacer"></span><div id="siteSummary" class="muted"></div><button class="btn primary" data-jump="create">新增</button></div>
+        <div class="row"><h2>Nginx 站点</h2><span class="spacer"></span><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:14px;"><input type="checkbox" id="showAllSites" onchange="toggleShowAllSites(this.checked)"><span>显示所有站点</span></label><div id="siteSummary" class="muted"></div><button class="btn primary" data-jump="create">新增</button></div>
         <div class="toolbar">
           <input id="siteSearch" placeholder="搜索域名、后端、来源">
           <select id="siteFilter">
@@ -563,6 +563,7 @@ curl http://127.0.0.1:端口号</pre>
 let state = null;
 let siteQuery = '';
 let siteFilter = 'all';
+let showAllSites = false;
 let certQuery = '';
 let certFilter = 'all';
 const VIEW_TITLES = {dashboard:'概览',issues:'问题',sites:'站点',services:'本机服务',certs:'证书',migrate:'证书迁移',create:'新增反代',tools:'维护',help:'帮助'};
@@ -681,6 +682,10 @@ function focusSite(domain){
   $('#siteFilter').value = 'all';
   $('#siteSearch').value = siteQuery;
   switchView('sites');
+  render();
+}
+function toggleShowAllSites(checked){
+  showAllSites = checked;
   render();
 }
 function buildIssueItems(){
@@ -912,7 +917,19 @@ function render(){
       }
     }
   });
-  const uniqueSites = Array.from(seenSiteDomains.values());
+  let uniqueSites = Array.from(seenSiteDomains.values());
+
+  // 过滤默认站点和特殊配置（除非开启"显示所有站点"）
+  if (!showAllSites) {
+    uniqueSites = uniqueSites.filter(s => {
+      const domain = s.domain || '';
+      const source = s.source || '';
+      // 排除：空域名、默认站点、nginx.conf 中的配置
+      if (!domain || domain === '(默认站点)') return false;
+      if (source.includes('nginx.conf')) return false;
+      return true;
+    });
+  }
 
   const filteredSites = uniqueSites.filter(s => {
     if (siteFilter === 'all') return true;
