@@ -2004,13 +2004,18 @@ def comment_out_nginx_config(domain: str, source: str) -> dict[str, object]:
     if not commented_lines:
         return {"code": 3, "output": f"未找到域名为 {domain} 的server块"}
 
-    # 创建备份
-    backup_path = source_path.with_name(f"{source_path.name}.bak-{int(time.time())}")
-    backup_path.write_text(original, encoding="utf-8")
-
-    # 写入注释后的配置
+    # 写入注释后的配置（不创建备份）
     new_content = "\n".join(lines) + "\n"
     source_path.write_text(new_content, encoding="utf-8")
+
+    # 删除 sites-enabled 中的软链接（如果存在）
+    if source_path.parent.name == "sites-available":
+        enabled_link = pathlib.Path("/etc/nginx/sites-enabled") / source_path.name
+        if enabled_link.exists() or enabled_link.is_symlink():
+            try:
+                enabled_link.unlink()
+            except Exception:
+                pass
 
     # 测试nginx配置
     test = run_cmd(["nginx", "-t"], timeout=20)
@@ -2024,7 +2029,7 @@ def comment_out_nginx_config(domain: str, source: str) -> dict[str, object]:
     if reload_result["code"] != 0:
         reload_result = run_cmd(["nginx", "-s", "reload"], timeout=20)
 
-    output = f"已注释配置: {domain}\n配置文件: {source}\n备份文件: {backup_path}\n注释了 {len(commented_lines)} 行\n{reload_result['output']}".strip()
+    output = f"已注释配置: {domain}\n配置文件: {source}\n注释了 {len(commented_lines)} 行\n{reload_result['output']}".strip()
     return {"code": reload_result["code"], "output": output}
 
 
