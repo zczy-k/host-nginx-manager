@@ -27,6 +27,9 @@ die() { printf "%b[x ]%b %s\n" "$RED" "$NC" "$*"; exit 1; }
 info() { printf "%b[i ]%b %s\n" "$BLUE" "$NC" "$*"; }
 section() { printf "\n%b%s%b\n" "$BOLD$CYAN" "$*" "$NC"; }
 
+# 全局变量：用于交互输入的终端设备
+TTY_IN=""
+
 require_root() {
     [[ ${EUID:-$(id -u)} -eq 0 ]] || die "请使用 root 身份运行安装脚本"
 }
@@ -147,10 +150,24 @@ do_upgrade() {
 
     # 6. 配置自动续期
     info "6/6 配置证书自动续期..."
-    if curl -fsSL "$RAW_BASE/setup-auto-renew.sh" | bash; then
-        log "自动续期配置完成"
+    echo ""
+    warn "提示：自动续期配置包含测试步骤，可能需要1分钟"
+    printf "是否配置证书自动续期？ [Y/n]: "
+    local setup_renew="y"
+    if [[ -n "$TTY_IN" ]]; then
+        read -r setup_renew <"$TTY_IN" 2>/dev/null || setup_renew="y"
+    fi
+
+    if [[ ! "$setup_renew" =~ ^[Nn]$ ]]; then
+        if curl -fsSL "$RAW_BASE/setup-auto-renew.sh" | bash; then
+            log "自动续期配置完成"
+        else
+            warn "自动续期配置失败，可稍后手动运行："
+            warn "  curl -fsSL $RAW_BASE/setup-auto-renew.sh | sudo bash"
+        fi
     else
-        warn "自动续期配置失败，可稍后手动运行"
+        info "已跳过自动续期配置，可稍后手动运行："
+        info "  curl -fsSL $RAW_BASE/setup-auto-renew.sh | sudo bash"
     fi
 
     section "升级完成！"
@@ -290,15 +307,14 @@ main() {
 
     # 判断是否有可用的交互终端
     # curl | bash 时 stdin 是管道，但 /dev/tty 仍可读取键盘输入
-    local tty_in=""
     if [[ -t 0 ]]; then
-        tty_in="/dev/stdin"
+        TTY_IN="/dev/stdin"
     elif [[ -e /dev/tty ]] && (exec </dev/tty) 2>/dev/null; then
-        tty_in="/dev/tty"
+        TTY_IN="/dev/tty"
     fi
 
     # 没有任何可交互的终端：回退到自动模式
-    if [[ -z "$tty_in" ]]; then
+    if [[ -z "$TTY_IN" ]]; then
         if detect_mode; then
             section "检测到已安装版本（无交互终端），自动执行升级..."
             do_upgrade
@@ -315,7 +331,7 @@ main() {
         show_menu
         printf "请输入选项 [1-3]: "
         local choice=""
-        read -r choice <"$tty_in" || choice="3"
+        read -r choice <"$TTY_IN" || choice="3"
 
         case "$choice" in
             1)
@@ -327,7 +343,7 @@ main() {
                 fi
                 echo ""
                 printf "按回车键退出..."
-                read -r _ <"$tty_in" || true
+                read -r _ <"$TTY_IN" || true
                 exit 0
                 ;;
             2)
@@ -336,13 +352,13 @@ main() {
                     warn "警告：这将重置所有配置和密码！"
                     printf "确认要全新安装吗？ [y/N]: "
                     local confirm=""
-                    read -r confirm <"$tty_in" || confirm="n"
+                    read -r confirm <"$TTY_IN" || confirm="n"
                     if [[ "$confirm" =~ ^[Yy]$ ]]; then
                         install_packages
                         do_install
                         echo ""
                         printf "按回车键退出..."
-                        read -r _ <"$tty_in" || true
+                        read -r _ <"$TTY_IN" || true
                         exit 0
                     fi
                 else

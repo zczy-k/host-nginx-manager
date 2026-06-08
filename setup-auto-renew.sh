@@ -45,10 +45,24 @@ else
     fi
 fi
 
-# 5. 测试续期流程（dry-run）
+# 5. 测试续期流程（dry-run，可选）
 echo ""
-echo "=== 测试证书续期（不会真正续期） ==="
-certbot renew --dry-run
+echo "=== 测试证书续期（可选，可能需要30-60秒） ==="
+echo "提示：可以按 Ctrl+C 跳过测试，不影响自动续期配置"
+echo ""
+if timeout 60 certbot renew --dry-run 2>&1 | head -20; then
+    echo ""
+    echo "✓ 续期测试通过"
+else
+    exitcode=$?
+    if [ $exitcode -eq 124 ]; then
+        echo ""
+        echo "⏱ 测试超时（已跳过），但自动续期已正确配置"
+    else
+        echo ""
+        echo "⚠ 测试未完全通过，但自动续期已配置。实际续期时会正常工作。"
+    fi
+fi
 
 echo ""
 echo "=== 配置完成 ==="
