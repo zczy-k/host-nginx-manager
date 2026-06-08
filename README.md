@@ -64,16 +64,79 @@ sudo cat /etc/host-nginx-manager/web.env
 
 当前 Web 面板支持：
 
-- 查看 nginx 状态
-- 查看受管站点
+- 查看 nginx 状态和站点统计
+- 查看受管站点、问题汇总
 - 新增标准 HTTP/HTTPS 反向代理
 - 申请并启用 Let's Encrypt HTTPS
+- **查看证书详情**（颁发者、有效期、SAN等）
+- **手动续期证书**
 - 关闭站点 HTTPS
 - 删除受管站点
+- 导入和迁移现有配置
 - 测试 nginx 配置
 - 重载 nginx
+- **应用内帮助文档**
 
 Web 面板本身不管理 `stream`、Rathole、`ssl_preread`。
+
+## 证书管理
+
+### 自动续期（推荐配置）
+
+Let's Encrypt 证书有效期90天，需要自动续期。
+
+**1. 配置自动续期（一次性设置）**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/setup-auto-renew.sh | sudo bash
+```
+
+这会：
+- 创建证书续期钩子，续期成功后自动重载nginx
+- 确保certbot定时任务已启用（每天检查2次）
+- 测试续期流程
+
+**2. 验证自动续期**
+
+```bash
+# 检查定时任务
+sudo systemctl list-timers | grep certbot
+
+# 测试续期（不会真正续期）
+sudo certbot renew --dry-run
+```
+
+**3. 查看续期日志**
+
+```bash
+sudo tail -f /var/log/letsencrypt/letsencrypt.log
+```
+
+### 手动续期
+
+**Web界面：**
+1. 进入"证书"视图
+2. 找到需要续期的域名
+3. 点击"查看详情"查看证书信息
+4. 点击"续期"按钮手动续期
+
+**命令行：**
+```bash
+# 续期单个域名
+sudo host-nginx-manager renew domain.com
+
+# 强制续期所有证书
+sudo certbot renew --force-renewal
+```
+
+### 证书健康监控
+
+Web面板会自动检测证书状态：
+- 🟢 **正常**：剩余30天以上
+- 🟡 **预警**：剩余7-30天
+- 🔴 **紧急**：剩余7天以内
+
+在"问题"视图中会显示所有证书异常。
 
 ## 安装 CLI 管理器
 
