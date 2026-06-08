@@ -2207,35 +2207,48 @@ def fix_certificate_permissions() -> dict[str, object]:
     output_lines = []
 
     try:
-        output_lines.append("步骤 1/3: 修改证书目录所有者...")
+        output_lines.append("步骤 1/4: 修改证书目录所有者...")
         result = run_cmd(["chown", "-R", "root:root", "/etc/letsencrypt/"], timeout=30)
         if result["code"] != 0:
             return {"code": 1, "output": f"修改所有者失败:\n{result['output']}"}
         output_lines.append("✓ 证书目录所有者已修改为 root:root")
 
-        output_lines.append("\n步骤 2/3: 设置证书文件权限...")
-        # 设置普通证书文件为 644
+        output_lines.append("\n步骤 2/4: 设置目录权限...")
+        # 设置目录权限为 755（可进入）
         result = run_cmd([
-            "find", "/etc/letsencrypt/archive/",
-            "-name", "*.pem",
-            "!", "-name", "privkey*.pem",
-            "-exec", "chmod", "644", "{}", ";"
+            "find", "/etc/letsencrypt/",
+            "-type", "d",
+            "-exec", "chmod", "755", "{}", "+"
         ], timeout=30)
-        if result["code"] != 0:
-            output_lines.append(f"⚠ 设置普通文件权限时出现警告: {result['output']}")
+        if result["code"] == 0:
+            output_lines.append("✓ 目录权限已设置为 755")
+        else:
+            output_lines.append(f"⚠ 设置目录权限时出现问题: {result['output']}")
+
+        output_lines.append("\n步骤 3/4: 设置证书文件权限...")
+        # 设置所有 .pem 文件为 644（默认）
+        result = run_cmd([
+            "find", "/etc/letsencrypt/",
+            "-type", "f",
+            "-name", "*.pem",
+            "-exec", "chmod", "644", "{}", "+"
+        ], timeout=30)
+        if result["code"] == 0:
+            output_lines.append("✓ 证书文件已设置为 644")
 
         # 设置私钥文件为 600
         result = run_cmd([
-            "find", "/etc/letsencrypt/archive/",
+            "find", "/etc/letsencrypt/",
+            "-type", "f",
             "-name", "privkey*.pem",
-            "-exec", "chmod", "600", "{}", ";"
+            "-exec", "chmod", "600", "{}", "+"
         ], timeout=30)
-        if result["code"] != 0:
-            output_lines.append(f"⚠ 设置私钥权限时出现警告: {result['output']}")
+        if result["code"] == 0:
+            output_lines.append("✓ 私钥文件已设置为 600")
+        else:
+            output_lines.append(f"⚠ 设置私钥权限时出现问题: {result['output']}")
 
-        output_lines.append("✓ 证书文件权限已设置")
-
-        output_lines.append("\n步骤 3/3: 重载 nginx...")
+        output_lines.append("\n步骤 4/4: 重载 nginx...")
         result = run_cmd(["systemctl", "reload", "nginx"], timeout=30)
         if result["code"] != 0:
             result = run_cmd(["nginx", "-s", "reload"], timeout=30)
@@ -2266,14 +2279,23 @@ def install_permission_fix_hook() -> dict[str, object]:
 # 在 certbot 续期后自动运行
 
 echo "正在修复证书权限..."
+
+# 修改所有者
 chown -R root:root /etc/letsencrypt/
-find /etc/letsencrypt/archive/ -name "*.pem" ! -name "privkey*.pem" -exec chmod 644  \\;
-find /etc/letsencrypt/archive/ -name "privkey*.pem" -exec chmod 600 {} \\;
+
+# 设置目录权限（必须可进入）
+find /etc/letsencrypt/ -type d -exec chmod 755 {} +
+
+# 设置证书文件权限
+find /etc/letsencrypt/ -type f -name "*.pem" -exec chmod 644 {} +
+
+# 设置私钥权限
+find /etc/letsencrypt/ -type f -name "privkey*.pem" -exec chmod 600 {} +
 
 echo "正在重载 nginx..."
-systemctl reload nginx || nginx -s reload
+systemctl reload nginx 2>/dev/null || nginx -s reload
 
-echo "证书权限修复完成"
+echo "✓ 证书权限修复完成"
 """
 
         hook_file.write_text(script_content, encoding="utf-8")
