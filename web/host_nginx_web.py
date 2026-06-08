@@ -2449,38 +2449,48 @@ def check_legacy_sites() -> dict[str, object]:
     try:
         servers = list_nginx_servers()
         legacy_sites = []
+        seen_domains = set()  # 防止重复
 
         for server in servers:
             if not server.get("managed"):
                 continue
 
             domain = server.get("managed_domain") or server.get("domain")
+            if not domain or domain in seen_domains:
+                continue  # 跳过已处理的域名
+
             source = server.get("source", "")
 
             # 判断是否为旧配置
             issues = []
 
-            # 1. 检查是否为接管但未迁移的站点
+            # 1. 检查配置文件名是否为标准格式
+            if source and not source.startswith("/etc/nginx/sites-available/vpspm-"):
+                issues.append("配置文件不是标准格式")
+            elif not source:
+                continue  # 没有配置文件，跳过
+
+            # 2. 检查是否为接管但未迁移的站点
             managed_sites = list_managed_sites()
             site_state = next((s for s in managed_sites if s.get("DOMAIN") == domain), {})
             if site_state.get("IMPORTED") == "1" and site_state.get("MIGRATED") != "1":
                 issues.append("已接管但未迁移到标准配置")
 
-            # 2. 检查配置文件名是否为标准格式
+            # 3. 检查配置文件内容（只有非标准配置文件才检查）
             if source and not source.startswith("/etc/nginx/sites-available/vpspm-"):
-                issues.append("配置文件不是标准格式")
+                if pathlib.Path(source).exists():
+                    try:
+                        content = pathlib.Path(source).read_text(encoding="utf-8", errors="ignore")
+                        if "if ($host =" in content or "if($host=" in content:
+                            issues.append("使用了 if 条件判断（Certbot风格）")
+                        if "managed by Certbot" in content:
+                            issues.append("包含 Certbot 标记")
+                    except Exception:
+                        pass
 
-            # 3. 检查是否使用了 if 语句（Certbot 风格）
-            if source and pathlib.Path(source).exists():
-                content = pathlib.Path(source).read_text(encoding="utf-8", errors="ignore")
-                if "if ($host =" in content or "if($host=" in content:
-                    issues.append("使用了 if 条件判断（Certbot风格）")
-                if "managed by Certbot" in content:
-                    issues.append("包含 Certbot 标记")
-                if not "vps-proxy-manager" in content and not "VPS Nginx" in content:
-                    issues.append("缺少本项目标识")
-
+            # 只有真正有问题的才加入列表
             if issues:
+                seen_domains.add(domain)
                 legacy_sites.append({
                     "domain": domain,
                     "source": source,
@@ -2532,29 +2542,34 @@ def migrate_legacy_sites() -> dict[str, object]:
             output_lines.append(f"  旧配置: {source}")
 
             try:
-                # 1. 读取状态文件获取配置
+                # 0. 检查是否已经迁移过（避免重复）
                 state_path = STATE_DIR / f"{domain}.env"
-                if not state_path.exists():
+                if state_path.exists():
+                    state = {}
+                    for line in state_path.read_text(encoding="utf-8").splitlines():
+                        if "=" in line and not line.startswith("#"):
+                            key, value = line.split("=", 1)
+                            state[key.strip()] = value.strip()
+
+                    # 如果已标记为已迁移，跳过
+                    if state.get("MIGRATED") == "1":
+                        output_lines.append(f"  ⚠ 已迁移过，跳过\n")
+                        continue
+
+                    upstream = state.get("UPSTREAM", "")
+                    upstream_scheme = state.get("UPSTREAM_SCHEME", "http")
+                    enable_ssl = state.get("ENABLE_SSL", "0")
+                else:
                     output_lines.append(f"  ✗ 状态文件不存在，跳过")
                     failed += 1
                     continue
-
-                state = {}
-                for line in state_path.read_text(encoding="utf-8").splitlines():
-                    if "=" in line and not line.startswith("#"):
-                        key, value = line.split("=", 1)
-                        state[key.strip()] = value.strip()
-
-                upstream = state.get("UPSTREAM", "")
-                upstream_scheme = state.get("UPSTREAM_SCHEME", "http")
-                enable_ssl = state.get("ENABLE_SSL", "0")
 
                 if not upstream:
                     output_lines.append(f"  ✗ 无法读取后端配置，跳过")
                     failed += 1
                     continue
 
-                # 2. 备份旧配置
+                # 1. 备份旧配置
                 if source and pathlib.Path(source).exists():
                     backup_dir = pathlib.Path("/opt/host-nginx-manager/backups")
                     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -2563,6 +2578,14 @@ def migrate_legacy_sites() -> dict[str, object]:
                     import shutil
                     shutil.copy2(source, backup_path)
                     output_lines.append(f"  ✓ 已备份旧配置: {backup_path}")
+
+                # 2. 删除旧的标准配置（如果存在）
+                old_conf = pathlib.Path(f"/etc/nginx/sites-available/vpspm-{domain}.conf")
+                if old_conf.exists():
+                    old_conf.unlink()
+                old_link = pathlib.Path(f"/etc/nginx/sites-enabled/vpspm-{domain}.conf")
+                if old_link.exists():
+                    old_link.unlink()
 
                 # 3. 使用管理脚本重建配置
                 args = [MANAGER_BIN, "add", domain, upstream, "--upstream-scheme", upstream_scheme]
@@ -2585,18 +2608,18 @@ def migrate_legacy_sites() -> dict[str, object]:
                     else:
                         output_lines.append(f"  ⚠ HTTPS启用失败，但HTTP配置已创建")
 
-                # 5. 注释或删除旧配置
-                if source and pathlib.Path(source).exists():
-                    comment_result = comment_out_nginx_config(domain, source)
-                    if comment_result["code"] == 0:
-                        output_lines.append(f"  ✓ 已注释旧配置")
-                    else:
-                        output_lines.append(f"  ⚠ 旧配置注释失败，请手动处理")
+                # 5. 注释或删除旧配置（非标准配置文件）
+                if source and not source.startswith("/etc/nginx/sites-available/vpspm-"):
+                    if pathlib.Path(source).exists():
+                        comment_result = comment_out_nginx_config(domain, source)
+                        if comment_result["code"] == 0:
+                            output_lines.append(f"  ✓ 已注释旧配置")
+                        else:
+                            output_lines.append(f"  ⚠ 旧配置注释失败: {comment_result.get('output', '')[:100]}")
 
                 # 6. 更新状态文件标记
                 state["MIGRATED"] = "1"
-                if "IMPORTED" in state:
-                    del state["IMPORTED"]
+                state["IMPORTED"] = "0"  # 清除 IMPORTED 标记
                 write_managed_state(domain, state)
 
                 output_lines.append(f"  ✓ 迁移完成\n")
