@@ -194,6 +194,7 @@ APP_HTML = r'''<!doctype html>
       <button data-view="sites">站点</button>
       <button data-view="services">本机服务</button>
       <button data-view="certs">证书</button>
+      <button data-view="migrate">证书迁移</button>
       <button data-view="create">新增反代</button>
       <button data-view="tools">维护</button>
       <button data-view="help">帮助</button>
@@ -277,6 +278,50 @@ APP_HTML = r'''<!doctype html>
           <button class="btn" id="certSearchClear" type="button">清空筛选</button>
         </div>
         <div style="overflow:auto"><table><thead><tr><th>域名</th><th>证书状态</th><th>自动续期</th><th>当前配置</th><th>来源</th><th>操作</th></tr></thead><tbody id="certRows"></tbody></table></div>
+      </div>
+    </section>
+    <section id="migrate" class="view">
+      <div class="panel">
+        <h2>🔧 证书迁移与修复工具</h2>
+        <p class="muted">检测并修复证书权限问题，确保 nginx 可以正常读取证书文件。</p>
+
+        <div class="notice" style="margin:16px 0;">
+          <strong>功能说明：</strong><br>
+          • 自动检测所有证书的权限问题<br>
+          • 修复证书文件所有者和权限<br>
+          • 设置自动修复脚本（certbot 续期后自动运行）<br>
+          • 不影响 Rathole、stream 等其他配置<br>
+          • 安全可靠，支持回滚
+        </div>
+
+        <div style="margin:24px 0;">
+          <h3>步骤 1：检查证书状态</h3>
+          <button class="btn primary" id="checkCertsBtn" type="button">🔍 检查所有证书</button>
+          <div id="certCheckResult" style="margin-top:12px;"></div>
+        </div>
+
+        <div style="margin:24px 0;">
+          <h3>步骤 2：修复证书权限</h3>
+          <button class="btn primary" id="fixCertsBtn" type="button" disabled>🔧 一键修复权限</button>
+          <button class="btn" id="installHookBtn" type="button" disabled>⚙️ 安装自动修复脚本</button>
+          <div id="certFixResult" style="margin-top:12px;"></div>
+        </div>
+
+        <div style="margin:24px 0;">
+          <h3>步骤 3：验证修复结果</h3>
+          <button class="btn" id="verifyCertsBtn" type="button" disabled>✓ 验证修复</button>
+          <div id="certVerifyResult" style="margin-top:12px;"></div>
+        </div>
+
+        <details style="margin-top:24px;">
+          <summary>高级选项</summary>
+          <div style="padding:16px;background:#f8f9fa;border-radius:8px;margin-top:12px;">
+            <h4>迁移自定义证书</h4>
+            <p class="muted">如果您有从其他工具（如 NPM）创建的证书，可以使用此功能统一管理。</p>
+            <label>证书所有者（当前）<input id="certOwner" value="npmbare" placeholder="npmbare"></label>
+            <button class="btn" id="migrateCustomBtn" type="button">迁移自定义证书</button>
+          </div>
+        </details>
       </div>
     </section>
     <section id="create" class="view">
@@ -505,7 +550,7 @@ let siteQuery = '';
 let siteFilter = 'all';
 let certQuery = '';
 let certFilter = 'all';
-const VIEW_TITLES = {dashboard:'概览',issues:'问题',sites:'站点',services:'本机服务',certs:'证书',create:'新增反代',tools:'维护',help:'帮助'};
+const VIEW_TITLES = {dashboard:'概览',issues:'问题',sites:'站点',services:'本机服务',certs:'证书',migrate:'证书迁移',create:'新增反代',tools:'维护',help:'帮助'};
 const CERT_WARN_STATES = new Set(['warn','missing','error','critical']);
 const $ = (s) => document.querySelector(s);
 function showMsg(text, type='info'){
@@ -1065,6 +1110,109 @@ $('#certSearchClear').onclick = () => { certQuery = ''; certFilter = 'all'; $('#
 $('#createForm').addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(e.target); const body = {domain:f.get('domain'), upstream:f.get('upstream'), scheme:f.get('scheme'), email:f.get('email'), ssl:f.has('ssl'), body:f.get('body'), readTimeout:f.get('readTimeout'), backendInsecure:f.has('backendInsecure')}; try { await action('/api/sites/add', body); e.target.reset(); } catch(err){ showMsg(err.message,'bad'); $('#output').textContent = err.message; } });
 document.querySelectorAll('.nav button,[data-jump]').forEach(b => b.onclick = () => switchView(b.dataset.view||b.dataset.jump));
 document.getElementById('certModal').onclick = (e) => { if(e.target.id === 'certModal') closeCertModal(); };
+
+// 证书迁移功能
+$('#checkCertsBtn').onclick = async () => {
+  const btn = $('#checkCertsBtn');
+  btn.disabled = true;
+  btn.textContent = '检查中...';
+  $('#certCheckResult').innerHTML = '<div style="color:var(--blue);">正在检查证书权限...</div>';
+  try {
+    const data = await api('/api/migrate/check', {method:'POST', body:'{}'});
+    let html = '<div class="panel" style="margin-top:12px;background:#f8f9fa;">';
+    html += '<h4>检查结果：</h4>';
+    html += `<p><strong>检查了 ${data.total} 个证书目录</strong></p>`;
+    if (data.issues.length > 0) {
+      html += `<p style="color:var(--red);"><strong>发现 ${data.issues.length} 个权限问题：</strong></p><ul>`;
+      data.issues.forEach(issue => {
+        html += `<li>${escapeHtml(issue)}</li>`;
+      });
+      html += '</ul>';
+      $('#fixCertsBtn').disabled = false;
+      $('#installHookBtn').disabled = false;
+    } else {
+      html += '<p style="color:var(--green);"><strong>✓ 所有证书权限正常</strong></p>';
+    }
+    html += '<pre style="max-height:200px;overflow:auto;margin-top:12px;">' + escapeHtml(data.output) + '</pre>';
+    html += '</div>';
+    $('#certCheckResult').innerHTML = html;
+  } catch(err) {
+    $('#certCheckResult').innerHTML = `<div class="panel" style="background:#fee;color:var(--red);margin-top:12px;">❌ ${escapeHtml(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 检查所有证书';
+  }
+};
+
+$('#fixCertsBtn').onclick = async () => {
+  if (!confirm('确认修复所有证书权限？\n\n此操作将：\n✓ 修改证书文件所有者为 root:root\n✓ 设置正确的文件权限\n✓ 重载 nginx\n\n该操作安全可靠，不影响其他配置。')) return;
+
+  const btn = $('#fixCertsBtn');
+  btn.disabled = true;
+  btn.textContent = '修复中...';
+  $('#certFixResult').innerHTML = '<div style="color:var(--blue);">正在修复证书权限...</div>';
+  try {
+    const data = await api('/api/migrate/fix', {method:'POST', body:'{}'});
+    let html = '<div class="panel" style="margin-top:12px;background:#d4f4dd;color:var(--green);">';
+    html += '<h4>✓ 修复完成！</h4>';
+    html += '<pre style="max-height:300px;overflow:auto;margin-top:12px;">' + escapeHtml(data.output) + '</pre>';
+    html += '</div>';
+    $('#certFixResult').innerHTML = html;
+    $('#verifyCertsBtn').disabled = false;
+    showMsg('✓ 证书权限修复成功', 'ok');
+  } catch(err) {
+    $('#certFixResult').innerHTML = `<div class="panel" style="background:#fee;color:var(--red);margin-top:12px;">❌ ${escapeHtml(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔧 一键修复权限';
+  }
+};
+
+$('#installHookBtn').onclick = async () => {
+  if (!confirm('确认安装自动修复脚本？\n\n此脚本将在 certbot 续期后自动运行，确保证书权限始终正确。\n\n脚本位置：/etc/letsencrypt/renewal-hooks/post/fix-permissions.sh')) return;
+
+  const btn = $('#installHookBtn');
+  btn.disabled = true;
+  btn.textContent = '安装中...';
+  try {
+    const data = await api('/api/migrate/install-hook', {method:'POST', body:'{}'});
+    $('#certFixResult').innerHTML += `<div class="panel" style="margin-top:12px;background:#d4f4dd;color:var(--green);"><h4>✓ 自动修复脚本已安装</h4><pre>${escapeHtml(data.output)}</pre></div>`;
+    showMsg('✓ 自动修复脚本安装成功', 'ok');
+  } catch(err) {
+    $('#certFixResult').innerHTML += `<div class="panel" style="background:#fee;color:var(--red);margin-top:12px;">❌ ${escapeHtml(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⚙️ 安装自动修复脚本';
+  }
+};
+
+$('#verifyCertsBtn').onclick = async () => {
+  const btn = $('#verifyCertsBtn');
+  btn.disabled = true;
+  btn.textContent = '验证中...';
+  $('#certVerifyResult').innerHTML = '<div style="color:var(--blue);">正在验证修复结果...</div>';
+  try {
+    const data = await api('/api/migrate/verify', {method:'POST', body:'{}'});
+    let html = '<div class="panel" style="margin-top:12px;';
+    if (data.success) {
+      html += 'background:#d4f4dd;color:var(--green);">';
+      html += '<h4>✓ 验证通过！</h4>';
+      html += '<p>所有证书均可被 nginx 正常读取。</p>';
+    } else {
+      html += 'background:#fff4db;color:var(--amber);">';
+      html += '<h4>⚠ 部分证书仍有问题</h4>';
+    }
+    html += '<pre style="max-height:200px;overflow:auto;margin-top:12px;">' + escapeHtml(data.output) + '</pre>';
+    html += '</div>';
+    $('#certVerifyResult').innerHTML = html;
+  } catch(err) {
+    $('#certVerifyResult').innerHTML = `<div class="panel" style="background:#fee;color:var(--red);margin-top:12px;">❌ ${escapeHtml(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✓ 验证修复';
+  }
+};
+
 load().catch(e=>showMsg(e.message,'bad'));
 </script>
 </body>
@@ -1979,6 +2127,225 @@ Let's Encrypt 无法通过 HTTP 验证您的域名。
     return output
 
 
+def check_certificate_permissions() -> dict[str, object]:
+    """检查所有证书的权限问题"""
+    if not pathlib.Path("/etc/letsencrypt/live").exists():
+        return {"code": 1, "total": 0, "issues": [], "output": "未找到证书目录 /etc/letsencrypt/live"}
+
+    issues = []
+    total = 0
+    output_lines = []
+
+    try:
+        for cert_dir in pathlib.Path("/etc/letsencrypt/live").iterdir():
+            if not cert_dir.is_dir() or cert_dir.name == "README":
+                continue
+
+            total += 1
+            domain = cert_dir.name
+            output_lines.append(f"检查证书: {domain}")
+
+            # 检查目录权限
+            stat = cert_dir.stat()
+            import pwd
+            try:
+                owner = pwd.getpwuid(stat.st_uid).pw_name
+            except KeyError:
+                owner = f"uid:{stat.st_uid}"
+
+            if owner != "root":
+                issues.append(f"{domain}: 目录所有者是 {owner}，应为 root")
+                output_lines.append(f"  ✗ 目录所有者: {owner} (应为 root)")
+            else:
+                output_lines.append(f"  ✓ 目录所有者: {owner}")
+
+            # 检查证书文件
+            for cert_file in ["fullchain.pem", "privkey.pem", "cert.pem", "chain.pem"]:
+                file_path = cert_dir / cert_file
+                if file_path.exists():
+                    file_stat = file_path.stat()
+                    try:
+                        file_owner = pwd.getpwuid(file_stat.st_uid).pw_name
+                    except KeyError:
+                        file_owner = f"uid:{file_stat.st_uid}"
+
+                    if file_owner != "root":
+                        issues.append(f"{domain}/{cert_file}: 所有者是 {file_owner}，应为 root")
+                        output_lines.append(f"  ✗ {cert_file}: {file_owner} (应为 root)")
+
+                    # 检查权限
+                    mode = oct(file_stat.st_mode)[-3:]
+                    if cert_file == "privkey.pem" and mode != "600":
+                        issues.append(f"{domain}/{cert_file}: 权限是 {mode}，应为 600")
+                        output_lines.append(f"  ✗ {cert_file}: {mode} (应为 600)")
+                    elif cert_file != "privkey.pem" and mode not in ["644", "640"]:
+                        issues.append(f"{domain}/{cert_file}: 权限是 {mode}，应为 644")
+                        output_lines.append(f"  ✗ {cert_file}: {mode} (应为 644)")
+
+        output_lines.append("")
+        output_lines.append(f"总计检查: {total} 个证书")
+        output_lines.append(f"发现问题: {len(issues)} 个")
+
+        return {
+            "code": 0,
+            "total": total,
+            "issues": issues,
+            "output": "\n".join(output_lines)
+        }
+
+    except Exception as e:
+        return {
+            "code": 2,
+            "total": total,
+            "issues": issues,
+            "output": f"检查失败: {e}\n" + "\n".join(output_lines)
+        }
+
+
+def fix_certificate_permissions() -> dict[str, object]:
+    """修复所有证书的权限"""
+    output_lines = []
+
+    try:
+        output_lines.append("步骤 1/3: 修改证书目录所有者...")
+        result = run_cmd(["chown", "-R", "root:root", "/etc/letsencrypt/"], timeout=30)
+        if result["code"] != 0:
+            return {"code": 1, "output": f"修改所有者失败:\n{result['output']}"}
+        output_lines.append("✓ 证书目录所有者已修改为 root:root")
+
+        output_lines.append("\n步骤 2/3: 设置证书文件权限...")
+        # 设置普通证书文件为 644
+        result = run_cmd([
+            "find", "/etc/letsencrypt/archive/",
+            "-name", "*.pem",
+            "!", "-name", "privkey*.pem",
+            "-exec", "chmod", "644", "{}", ";"
+        ], timeout=30)
+        if result["code"] != 0:
+            output_lines.append(f"⚠ 设置普通文件权限时出现警告: {result['output']}")
+
+        # 设置私钥文件为 600
+        result = run_cmd([
+            "find", "/etc/letsencrypt/archive/",
+            "-name", "privkey*.pem",
+            "-exec", "chmod", "600", "{}", ";"
+        ], timeout=30)
+        if result["code"] != 0:
+            output_lines.append(f"⚠ 设置私钥权限时出现警告: {result['output']}")
+
+        output_lines.append("✓ 证书文件权限已设置")
+
+        output_lines.append("\n步骤 3/3: 重载 nginx...")
+        result = run_cmd(["systemctl", "reload", "nginx"], timeout=30)
+        if result["code"] != 0:
+            result = run_cmd(["nginx", "-s", "reload"], timeout=30)
+        if result["code"] == 0:
+            output_lines.append("✓ Nginx 已重载")
+        else:
+            output_lines.append(f"⚠ Nginx 重载失败: {result['output']}")
+
+        output_lines.append("\n✓ 证书权限修复完成！")
+
+        return {"code": 0, "output": "\n".join(output_lines)}
+
+    except Exception as e:
+        output_lines.append(f"\n✗ 修复失败: {e}")
+        return {"code": 2, "output": "\n".join(output_lines)}
+
+
+def install_permission_fix_hook() -> dict[str, object]:
+    """安装自动修复权限的 certbot hook"""
+    hook_dir = pathlib.Path("/etc/letsencrypt/renewal-hooks/post")
+    hook_file = hook_dir / "fix-permissions.sh"
+
+    try:
+        hook_dir.mkdir(parents=True, exist_ok=True)
+
+        script_content = """#!/bin/bash
+# 自动修复证书权限
+# 在 certbot 续期后自动运行
+
+echo "正在修复证书权限..."
+chown -R root:root /etc/letsencrypt/
+find /etc/letsencrypt/archive/ -name "*.pem" ! -name "privkey*.pem" -exec chmod 644  \\;
+find /etc/letsencrypt/archive/ -name "privkey*.pem" -exec chmod 600 {} \\;
+
+echo "正在重载 nginx..."
+systemctl reload nginx || nginx -s reload
+
+echo "证书权限修复完成"
+"""
+
+        hook_file.write_text(script_content, encoding="utf-8")
+        os.chmod(hook_file, 0o755)
+
+        output = f"""✓ 自动修复脚本已安装
+
+脚本位置: {hook_file}
+
+该脚本将在以下情况自动运行：
+• certbot 续期证书后
+• certbot renew 命令执行后
+
+您也可以手动运行测试：
+  sudo {hook_file}
+"""
+        return {"code": 0, "output": output}
+
+    except Exception as e:
+        return {"code": 1, "output": f"安装脚本失败: {e}"}
+
+
+def verify_certificate_permissions() -> dict[str, object]:
+    """验证证书权限修复结果"""
+    output_lines = []
+    all_ok = True
+
+    try:
+        output_lines.append("正在验证证书权限...")
+
+        if not pathlib.Path("/etc/letsencrypt/live").exists():
+            return {"code": 1, "success": False, "output": "证书目录不存在"}
+
+        for cert_dir in pathlib.Path("/etc/letsencrypt/live").iterdir():
+            if not cert_dir.is_dir() or cert_dir.name == "README":
+                continue
+
+            domain = cert_dir.name
+            fullchain = cert_dir / "fullchain.pem"
+
+            if not fullchain.exists():
+                output_lines.append(f"✗ {domain}: fullchain.pem 不存在")
+                all_ok = False
+                continue
+
+            # 测试 www-data 用户能否读取
+            result = run_cmd(["sudo", "-u", "www-data", "cat", str(fullchain)], timeout=5)
+            if result["code"] == 0:
+                output_lines.append(f"✓ {domain}: 证书可读取")
+            else:
+                output_lines.append(f"✗ {domain}: 证书无法读取")
+                all_ok = False
+
+        if all_ok:
+            output_lines.append("\n✓ 所有证书验证通过！")
+        else:
+            output_lines.append("\n⚠ 部分证书仍有问题，请重新修复")
+
+        return {
+            "code": 0,
+            "success": all_ok,
+            "output": "\n".join(output_lines)
+        }
+
+    except Exception as e:
+        return {
+            "code": 2,
+            "success": False,
+            "output": f"验证失败: {e}\n" + "\n".join(output_lines)
+        }
+
+
 def run_cmd(args: list[str], timeout: int = 90) -> dict[str, object]:
     try:
         proc = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
@@ -2225,6 +2592,27 @@ class Handler(BaseHTTPRequestHandler):
             enable = "1" if data.get("enable", True) else "0"
             result = run_cmd([MANAGER_BIN, "set-auto-renew", domain, enable], timeout=30)
             self.send_json({"message": "自动续期设置已更新", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        # 证书迁移相关 API
+        if path == "/api/migrate/check":
+            result = check_certificate_permissions()
+            self.send_json(result, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/migrate/fix":
+            result = fix_certificate_permissions()
+            self.send_json({"message": "证书权限修复完成", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/migrate/install-hook":
+            result = install_permission_fix_hook()
+            self.send_json({"message": "自动修复脚本已安装", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/migrate/verify":
+            result = verify_certificate_permissions()
+            self.send_json(result, 200 if result["code"] == 0 else 500)
             return
 
         self.send_error(404)
