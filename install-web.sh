@@ -13,13 +13,13 @@ RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/zczy-k/host-nginx-manage
 BIND_ADDR="${HNG_WEB_BIND:-0.0.0.0}"
 PORT="${HNG_WEB_PORT:-8098}"
 
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+RED=$'\033[0;31m'
+BLUE=$'\033[0;34m'
+CYAN=$'\033[0;36m'
+BOLD=$'\033[1m'
+NC=$'\033[0m'
 
 log() { printf "%b[OK]%b %s\n" "$GREEN" "$NC" "$*"; }
 warn() { printf "%b[! ]%b %s\n" "$YELLOW" "$NC" "$*"; }
@@ -64,13 +64,11 @@ detect_mode() {
 
 show_menu() {
     clear
-    cat <<EOF
-$BOLD$CYAN
-╔════════════════════════════════════════════════╗
-║     Host Nginx Manager - 安装/升级工具        ║
-╚════════════════════════════════════════════════╝
-$NC
-EOF
+    printf "${BOLD}${CYAN}\n"
+    printf "╔════════════════════════════════════════════════╗\n"
+    printf "║     Host Nginx Manager - 安装/升级工具        ║\n"
+    printf "╚════════════════════════════════════════════════╝\n"
+    printf "${NC}\n"
 
     if detect_mode; then
         section "检测到已安装的版本"
@@ -270,21 +268,7 @@ EOF
 main() {
     require_root
 
-    # 检测是否通过管道执行（无法交互）
-    if [[ ! -t 0 ]]; then
-        # 非交互模式：检测已安装则升级，未安装则安装
-        if detect_mode; then
-            section "检测到已安装版本，执行升级..."
-            do_upgrade
-        else
-            section "未检测到已安装版本，执行全新安装..."
-            install_packages
-            do_install
-        fi
-        return 0
-    fi
-
-    # 如果有命令行参数，直接执行
+    # 如果有命令行参数，直接执行（脚本化用法）
     if [[ $# -gt 0 ]]; then
         case "$1" in
             --upgrade)
@@ -304,10 +288,34 @@ main() {
         esac
     fi
 
-    # 交互模式（只有直接运行脚本时才会到这里）
+    # 判断是否有可用的交互终端
+    # curl | bash 时 stdin 是管道，但 /dev/tty 仍可读取键盘输入
+    local tty_in=""
+    if [[ -t 0 ]]; then
+        tty_in="/dev/stdin"
+    elif [[ -e /dev/tty ]] && (exec </dev/tty) 2>/dev/null; then
+        tty_in="/dev/tty"
+    fi
+
+    # 没有任何可交互的终端：回退到自动模式
+    if [[ -z "$tty_in" ]]; then
+        if detect_mode; then
+            section "检测到已安装版本（无交互终端），自动执行升级..."
+            do_upgrade
+        else
+            section "未检测到已安装版本（无交互终端），自动执行安装..."
+            install_packages
+            do_install
+        fi
+        return 0
+    fi
+
+    # 交互模式：从 tty 读取用户选择
     while true; do
         show_menu
-        read -r -p "请输入选项 [1-3]: " choice
+        printf "请输入选项 [1-3]: "
+        local choice=""
+        read -r choice <"$tty_in" || choice="3"
 
         case "$choice" in
             1)
@@ -318,22 +326,29 @@ main() {
                     do_install
                 fi
                 echo ""
-                read -r -p "按回车键继续..."
+                printf "按回车键退出..."
+                read -r _ <"$tty_in" || true
+                exit 0
                 ;;
             2)
                 if detect_mode; then
                     echo ""
                     warn "警告：这将重置所有配置和密码！"
-                    read -r -p "确认要全新安装吗？ [y/N]: " confirm
+                    printf "确认要全新安装吗？ [y/N]: "
+                    local confirm=""
+                    read -r confirm <"$tty_in" || confirm="n"
                     if [[ "$confirm" =~ ^[Yy]$ ]]; then
                         install_packages
                         do_install
+                        echo ""
+                        printf "按回车键退出..."
+                        read -r _ <"$tty_in" || true
+                        exit 0
                     fi
                 else
+                    echo "退出安装程序"
                     exit 0
                 fi
-                echo ""
-                read -r -p "按回车键继续..."
                 ;;
             3)
                 echo "退出安装程序"
