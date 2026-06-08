@@ -2483,24 +2483,42 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             # 查找证书路径
-            servers = list_nginx_servers()
-            server = next((s for s in servers if s.get("domain") == domain or s.get("managed_domain") == domain), None)
-            if not server:
-                self.send_json({"error": f"未找到该站点: {domain}"}, 404)
+            try:
+                servers = list_nginx_servers()
+                server = next((s for s in servers if s.get("domain") == domain or s.get("managed_domain") == domain), None)
+
+                if not server:
+                    # 调试：列出所有可用域名
+                    all_domains = [s.get("domain") for s in servers]
+                    self.send_json({
+                        "error": f"未找到该站点: {domain}",
+                        "debug": f"可用域名: {', '.join(all_domains)}"
+                    }, 404)
+                    return
+
+                # 检查站点是否启用了HTTPS
+                if not server.get("https"):
+                    self.send_json({
+                        "error": "该站点未启用 HTTPS，无证书信息",
+                        "status": "none",
+                        "debug": f"server keys: {list(server.keys())}"
+                    }, 400)
+                    return
+
+                cert_path = str(server.get("ssl_cert_path") or "")
+                if not cert_path:
+                    cert_path = f"/etc/letsencrypt/live/{domain}/fullchain.pem"
+
+                detail = read_certificate_detail(cert_path)
+                self.send_json({"domain": domain, "cert_path": cert_path, **detail})
                 return
-
-            # 检查站点是否启用了HTTPS
-            if not server.get("https"):
-                self.send_json({"error": "该站点未启用 HTTPS，无证书信息", "status": "none"}, 400)
+            except Exception as e:
+                import traceback
+                self.send_json({
+                    "error": f"处理请求时出错: {str(e)}",
+                    "traceback": traceback.format_exc()
+                }, 500)
                 return
-
-            cert_path = str(server.get("ssl_cert_path") or "")
-            if not cert_path:
-                cert_path = f"/etc/letsencrypt/live/{domain}/fullchain.pem"
-
-            detail = read_certificate_detail(cert_path)
-            self.send_json({"domain": domain, "cert_path": cert_path, **detail})
-            return
 
         self.send_error(404)
 
