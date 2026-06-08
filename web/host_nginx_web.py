@@ -17,6 +17,7 @@ import socket
 import ssl
 import subprocess
 import time
+import urllib.request
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -998,11 +999,23 @@ def list_local_ip_addresses() -> list[str]:
         seen.add(ip)
         local_ips.append(ip)
 
+    # 1. 获取本机所有IP (hostname -I)
     result = run_cmd(["hostname", "-I"], timeout=10)
     if result["code"] == 0:
         for part in str(result["output"]).split():
             add_ip(part)
 
+    # 2. 获取公网IP (适配云服务商NAT场景)
+    for service in ["https://ifconfig.me", "https://ip.sb", "https://api.ipify.org"]:
+        try:
+            response = urllib.request.urlopen(service, timeout=3)
+            public_ip = response.read().decode('utf-8').strip()
+            add_ip(public_ip)
+            break  # 成功获取一个即可
+        except Exception:
+            continue
+
+    # 3. socket备用方案
     if not local_ips:
         try:
             for info in socket.getaddrinfo(socket.gethostname(), None, type=socket.SOCK_STREAM):
