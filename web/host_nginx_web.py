@@ -636,6 +636,9 @@ function buildIssueItems(){
     if (site.cert_status === 'missing' || site.cert_status === 'error') {
       issues.push({kind:'cert_bad', severity:'bad', domain, detail: site.cert_info || '证书不可用', site});
     }
+    if (site.cert_status === 'critical') {
+      issues.push({kind:'cert_critical', severity:'bad', domain, detail: `证书仅剩 ${site.cert_days ?? '-'} 天`, site});
+    }
     if (hasDnsIssue(site)) {
       issues.push({kind:'dns', severity:'bad', domain, detail: site.dns_detail || 'DNS 未指向本机', site});
     }
@@ -646,8 +649,45 @@ function issueLabel(issue){
   if (issue.kind === 'backend') return '后端异常';
   if (issue.kind === 'cert_warn') return '证书预警';
   if (issue.kind === 'cert_bad') return '证书异常';
+  if (issue.kind === 'cert_critical') return '证书紧急';
   if (issue.kind === 'dns') return 'DNS 异常';
   return '问题';
+}
+function getQuickFixAction(issue){
+  const site = issue.site;
+  const actionDomain = String(site.managed_domain || site.domain || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
+  // 证书即将过期 - 一键续期
+  if (issue.kind === 'cert_warn' && site.managed) {
+    return `<button class="btn small primary" onclick="quickFixCertRenew('${actionDomain}')">⚡ 立即续期</button>`;
+  }
+
+  // 证书紧急过期 - 一键续期
+  if (issue.kind === 'cert_critical' && site.managed) {
+    return `<button class="btn small primary" onclick="quickFixCertRenew('${actionDomain}')">⚡ 紧急续期</button>`;
+  }
+
+  // 证书异常 - 一键修复（强制重新申请）
+  if (issue.kind === 'cert_bad' && site.managed && site.https) {
+    return `<button class="btn small primary" onclick="quickFixCertReissue('${actionDomain}')">⚡ 一键修复</button>`;
+  }
+
+  // 证书缺失 - 启用HTTPS
+  if (issue.kind === 'cert_bad' && site.managed && !site.https) {
+    return `<button class="btn small primary" onclick="enableSsl('${actionDomain}')">⚡ 启用HTTPS</button>`;
+  }
+
+  return '';
+}
+async function quickFixCertRenew(domain){
+  if(confirm(`⚡ 快速修复\n\n将立即续期证书：${domain}\n\n确认继续？`)){
+    await action('/api/certs/renew',{domain});
+  }
+}
+async function quickFixCertReissue(domain){
+  if(confirm(`⚡ 快速修复\n\n将强制重新申请证书：${domain}\n\n此操作将：\n✓ 删除损坏的证书\n✓ 重新验证域名\n✓ 申请全新证书\n\n确认继续？`)){
+    await action('/api/certs/force-reissue',{domain});
+  }
 }
 function renderIssueRows(){
   const issues = buildIssueItems();
@@ -657,6 +697,10 @@ function renderIssueRows(){
     const focusDomain = String(site.managed_domain || site.domain || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const actionDomain = String(site.managed_domain || site.domain || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const actionSource = String(site.source || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
+    // 获取一键修复按钮
+    const quickFix = getQuickFixAction(issue);
+
     let actions = `<button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
 
     // 可纳入管理的站点
@@ -667,11 +711,12 @@ function renderIssueRows(){
     else if (site.managed && (issue.kind === 'dns' || issue.kind === 'backend')) {
       actions = `<button class="btn small danger" onclick="removeSite('${actionDomain}')">删除站点</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
     }
-    // 证书问题
-    else if ((issue.kind === 'cert_warn' || issue.kind === 'cert_bad') && site.managed) {
-      actions = site.https
-        ? `<button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`
-        : `<button class="btn small primary" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
+    // 证书问题 - 添加一键修复
+    else if ((issue.kind === 'cert_warn' || issue.kind === 'cert_bad' || issue.kind === 'cert_critical') && site.managed) {
+      const otherActions = site.https
+        ? `<button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button>`
+        : `<button class="btn small primary" onclick="enableSsl('${actionDomain}')">启用HTTPS</button>`;
+      actions = quickFix + otherActions + `<button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
     }
 
     const tagClass = issue.severity === 'warn' ? 'warn' : 'bad';
@@ -804,11 +849,84 @@ function render(){
   }).join('');
   $('#serviceRows').innerHTML = serviceRows || '<tr><td colspan="6" class="muted">当前没有发现适合反代的本机监听服务</td></tr>';
 }
-async function action(path, body){ $('#output').textContent='执行中...'; const data = await api(path,{method:'POST',body:JSON.stringify(body||{})}); $('#output').textContent = data.output || '完成'; showMsg(data.message || '操作完成','ok'); await load(); }
+async function action(path, body){
+  $('#output').textContent='执行中...';
+  showMsg('正在执行操作，请稍候...', 'info');
+
+  try {
+    const data = await api(path,{method:'POST',body:JSON.stringify(body||{})});
+    $('#output').textContent = data.output || '完成';
+
+    // 根据操作类型显示不同的成功消息
+    let successMsg = data.message || '操作完成';
+    if (path.includes('/certs/')) successMsg = '✓ ' + successMsg;
+    if (path.includes('/sites/add')) successMsg = '✓ 站点创建成功';
+    if (path.includes('/sites/remove')) successMsg = '✓ 站点删除成功';
+
+    showMsg(successMsg,'ok');
+    await load();
+  } catch(err) {
+    $('#output').textContent = err.message || '操作失败';
+    showMsg('❌ ' + err.message, 'bad');
+    throw err;
+  }
+}
 async function enableSsl(domain){ const email = prompt('证书邮箱，可留空'); await action('/api/sites/enable-ssl',{domain,email:email||''}); }
 async function editSite(domain, currentTarget){ const target = prompt('新的后端地址，例如 127.0.0.1:3002 或 http://127.0.0.1:3002', currentTarget || ''); if(target) await action('/api/sites/update',{domain,target}); }
 async function disableSsl(domain){ if(confirm('确认关闭 HTTPS？')) await action('/api/sites/disable-ssl',{domain}); }
-async function removeSite(domain){ if(confirm('⚠️ 确认删除这个站点？\n\n操作将：\n✓ 立即停止网站运行\n✓ 删除nginx配置文件\n✓ 自动创建备份\n✓ 保留SSL证书\n\n提示：可在"维护"界面恢复已删除的站点。')) await action('/api/sites/remove',{domain, delete_cert:false}); }
+async function removeSite(domain){
+  showDeleteModal(domain);
+}
+function showDeleteModal(domain){
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:520px;">
+      <div class="modal-header">
+        <h3>删除站点：${escapeHtml(domain)}</h3>
+        <span class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</span>
+      </div>
+      <div class="modal-body">
+        <p style="margin-bottom:16px;">请选择删除方式：</p>
+        <div style="display:grid;gap:12px;margin-bottom:20px;">
+          <label class="delete-option" style="border:2px solid var(--line);border-radius:8px;padding:16px;cursor:pointer;transition:all 0.2s;">
+            <input type="radio" name="deleteMode" value="keep" checked style="margin-right:8px;">
+            <div style="display:inline-block;">
+              <strong style="color:var(--text);">删除站点，保留证书</strong>
+              <div class="muted" style="margin-top:4px;font-size:13px;">✓ 删除 nginx 配置<br>✓ 自动创建备份<br>✓ 保留 SSL 证书（推荐）</div>
+            </div>
+          </label>
+          <label class="delete-option" style="border:2px solid var(--line);border-radius:8px;padding:16px;cursor:pointer;transition:all 0.2s;">
+            <input type="radio" name="deleteMode" value="delete" style="margin-right:8px;">
+            <div style="display:inline-block;">
+              <strong style="color:var(--red);">删除站点和证书</strong>
+              <div class="muted" style="margin-top:4px;font-size:13px;">✗ 删除 nginx 配置<br>✗ 删除 SSL 证书<br>✗ 清理所有证书文件<br>⚠️ 重新申请需验证域名</div>
+            </div>
+          </label>
+        </div>
+        <div class="row" style="gap:12px;">
+          <button class="btn" onclick="this.closest('.modal-overlay').remove()">取消</button>
+          <span class="spacer"></span>
+          <button class="btn danger" onclick="confirmDeleteSite('${escapeHtml(domain)}', this.closest('.modal-overlay'))">确认删除</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  // 选中效果
+  modal.querySelectorAll('.delete-option').forEach(opt => {
+    opt.onclick = () => {
+      modal.querySelectorAll('.delete-option').forEach(o => o.style.borderColor = 'var(--line)');
+      opt.style.borderColor = 'var(--blue)';
+    };
+  });
+}
+async function confirmDeleteSite(domain, modalEl){
+  const mode = modalEl.querySelector('input[name="deleteMode"]:checked').value;
+  modalEl.remove();
+  await action('/api/sites/remove',{domain, delete_cert: mode === 'delete'});
+}
 async function commentOutConfig(domain, source){ if(confirm(`确认注释掉这个nginx配置？\n\n域名: ${domain}\n配置文件: ${source}\n\n操作将：\n1. 注释掉该server块\n2. 创建备份文件\n3. 重载nginx\n\n该配置不会被删除，只是被注释。`)) await action('/api/nginx/comment-out',{domain, source}); }
 async function takeOverSite(domain, source){
   if(confirm(`🎯 确认纳入管理？
@@ -830,7 +948,63 @@ async function takeOverSite(domain, source){
 
 确认继续？`)) await action('/api/sites/take-over',{domain, source});
 }
-async function renewCert(domain){ if(confirm('确认续期该域名的证书？\n\n这将重新向 Let\'s Encrypt 申请证书，通常在证书即将过期时使用。')) await action('/api/certs/renew',{domain}); }
+async function renewCert(domain){
+  showRenewModal(domain);
+}
+function showRenewModal(domain){
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:520px;">
+      <div class="modal-header">
+        <h3>续期证书：${escapeHtml(domain)}</h3>
+        <span class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</span>
+      </div>
+      <div class="modal-body">
+        <p style="margin-bottom:16px;">请选择续期方式：</p>
+        <div style="display:grid;gap:12px;margin-bottom:20px;">
+          <label class="renew-option" style="border:2px solid var(--blue);border-radius:8px;padding:16px;cursor:pointer;transition:all 0.2s;">
+            <input type="radio" name="renewMode" value="normal" checked style="margin-right:8px;">
+            <div style="display:inline-block;">
+              <strong style="color:var(--text);">正常续期（推荐）</strong>
+              <div class="muted" style="margin-top:4px;font-size:13px;">✓ 使用现有证书续期<br>✓ 快速完成<br>✓ 适用于证书即将过期</div>
+            </div>
+          </label>
+          <label class="renew-option" style="border:2px solid var(--line);border-radius:8px;padding:16px;cursor:pointer;transition:all 0.2s;">
+            <input type="radio" name="renewMode" value="force" style="margin-right:8px;">
+            <div style="display:inline-block;">
+              <strong style="color:var(--amber);">强制重新申请</strong>
+              <div class="muted" style="margin-top:4px;font-size:13px;">✓ 删除现有证书<br>✓ 重新验证域名<br>✓ 申请全新证书<br>⚠️ 适用于证书损坏的情况</div>
+            </div>
+          </label>
+        </div>
+        <div class="row" style="gap:12px;">
+          <button class="btn" onclick="this.closest('.modal-overlay').remove()">取消</button>
+          <span class="spacer"></span>
+          <button class="btn primary" onclick="confirmRenewCert('${escapeHtml(domain)}', this.closest('.modal-overlay'))">确认续期</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  // 选中效果
+  modal.querySelectorAll('.renew-option').forEach(opt => {
+    opt.onclick = () => {
+      modal.querySelectorAll('.renew-option').forEach(o => o.style.borderColor = 'var(--line)');
+      opt.style.borderColor = 'var(--blue)';
+    };
+  });
+}
+async function confirmRenewCert(domain, modalEl){
+  const mode = modalEl.querySelector('input[name="renewMode"]:checked').value;
+  modalEl.remove();
+  if(mode === 'force'){
+    await action('/api/certs/force-reissue',{domain});
+  } else {
+    await action('/api/certs/renew',{domain});
+  }
+}
 async function setAutoRenew(domain, enable) {
   try {
     await action('/api/certs/set-auto-renew', {domain, enable});
@@ -1437,22 +1611,18 @@ def take_over_site(domain: str, source: str) -> dict[str, object]:
     # 检查是否有现有证书
     has_existing_cert = server.get("https") and pathlib.Path(f"/etc/letsencrypt/live/{domain}").exists()
 
-    # 使用管理脚本创建受管配置
-    args = [MANAGER_BIN, "add", domain, upstream_target, "--upstream-scheme", upstream_scheme]
-
-    if has_existing_cert:
-        # 有现有证书，直接启用SSL（复用证书）
-        pass  # 默认就是启用SSL
-    elif server.get("https"):
-        # 有HTTPS但证书文件不存在，先不启用SSL
-        args.append("--no-ssl")
-    else:
-        # 原本就是HTTP站点，不启用SSL
-        args.append("--no-ssl")
+    # 使用管理脚本创建受管配置（先创建HTTP，避免重复申请证书）
+    args = [MANAGER_BIN, "add", domain, upstream_target, "--upstream-scheme", upstream_scheme, "--no-ssl"]
 
     result = run_cmd(args, timeout=120)
     if result["code"] != 0:
         return {"code": 6, "output": f"创建受管配置失败：\n{result['output']}"}
+
+    # 如果有现有证书，启用SSL复用证书
+    if has_existing_cert:
+        enable_ssl_result = run_cmd([MANAGER_BIN, "enable-ssl", domain], timeout=120)
+        if enable_ssl_result["code"] != 0:
+            return {"code": 7, "output": f"启用SSL失败：\n{enable_ssl_result['output']}\n\nHTTP配置已创建，可稍后手动启用HTTPS"}
 
     # 注释原配置
     source_path = pathlib.Path(source)
@@ -1645,6 +1815,10 @@ def remove_site_with_backup(domain: str, delete_cert: bool = False) -> dict[str,
         output_parts = [
             f"✓ 已删除站点：{domain}",
             f"✓ 备份文件：{backup_file}",
+        ]
+        if delete_cert:
+            output_parts.append("✓ 证书已彻底清理")
+        output_parts.extend([
             "",
             "如需恢复，请运行：",
             f"  sudo tar -xzf {backup_file} -C /tmp/",
@@ -1652,23 +1826,174 @@ def remove_site_with_backup(domain: str, delete_cert: bool = False) -> dict[str,
             f"  sudo cp /tmp/vpspm-{domain}.conf /etc/nginx/sites-available/",
             f"  sudo ln -sf /etc/nginx/sites-available/vpspm-{domain}.conf /etc/nginx/sites-enabled/",
             "  sudo nginx -t && sudo systemctl reload nginx",
-        ]
+        ])
         return {"code": 0, "output": "\n".join(output_parts)}
     else:
         return {"code": 4, "output": f"删除失败：\n{result['output']}\n\n备份已保存：{backup_file}"}
 
 
+def force_reissue_certificate(domain: str) -> dict[str, object]:
+    """强制重新申请证书：彻底删除现有证书后重新申请"""
+    domain = domain.strip().lower()
+    if not DOMAIN_RE.match(domain):
+        return {"code": 1, "output": "域名无效"}
+
+    state_path = STATE_DIR / f"{domain}.env"
+    if not state_path.exists():
+        return {"code": 2, "output": "状态文件不存在，该站点不是受管站点"}
+
+    # 读取状态
+    state = parse_state_file(state_path)
+    if state.get("ENABLE_SSL") != "1":
+        return {"code": 3, "output": "该站点未启用 HTTPS，无需重新申请证书"}
+
+    output_lines = []
+
+    # 1. 彻底删除现有证书
+    output_lines.append("正在清理现有证书...")
+    cert_dirs = [
+        pathlib.Path(f"/etc/letsencrypt/live/{domain}"),
+        pathlib.Path(f"/etc/letsencrypt/archive/{domain}"),
+        pathlib.Path(f"/etc/letsencrypt/renewal/{domain}.conf"),
+    ]
+
+    # 先尝试使用 certbot delete
+    run_cmd(["certbot", "delete", "--cert-name", domain, "--non-interactive"], timeout=30)
+
+    # 强制删除目录
+    for cert_path in cert_dirs:
+        if cert_path.exists():
+            try:
+                if cert_path.is_dir():
+                    import shutil
+                    shutil.rmtree(cert_path)
+                else:
+                    cert_path.unlink()
+                output_lines.append(f"✓ 已删除：{cert_path}")
+            except Exception as e:
+                output_lines.append(f"⚠ 删除失败：{cert_path} - {e}")
+
+    # 2. 关闭 HTTPS（切换到纯 HTTP）
+    output_lines.append("\n暂时切换到 HTTP 模式...")
+    disable_result = run_cmd([MANAGER_BIN, "disable-ssl", domain], timeout=60)
+    if disable_result["code"] != 0:
+        return {"code": 4, "output": "\n".join(output_lines) + f"\n\n关闭 HTTPS 失败：\n{disable_result['output']}"}
+
+    # 3. 重新申请证书并启用 HTTPS
+    output_lines.append("\n重新申请证书...")
+    enable_result = run_cmd([MANAGER_BIN, "enable-ssl", domain], timeout=180)
+    if enable_result["code"] != 0:
+        return {"code": 5, "output": "\n".join(output_lines) + f"\n\n证书申请失败：\n{enable_result['output']}"}
+
+    output_lines.append("\n✓ 证书已重新申请并启用")
+    return {"code": 0, "output": "\n".join(output_lines)}
+
+
+def parse_friendly_error(output: str) -> str:
+    """将技术错误信息转换为用户友好的提示"""
+    output_lower = output.lower()
+
+    # Let's Encrypt 速率限制
+    if "too many certificates" in output_lower or "rate limit" in output_lower:
+        return """❌ Let's Encrypt 速率限制
+
+您已达到该域名的申请限制（每周最多 5 次）。
+
+解决方案：
+1. 等待 7 天后重试
+2. 检查是否有重复申请的情况
+3. 使用"强制重新申请"功能清理残留证书
+
+详细日志：
+""" + output
+
+    # DNS 验证失败
+    if "connection timed out" in output_lower and "acme-challenge" in output_lower:
+        return """❌ 域名验证失败（80端口不可达）
+
+Let's Encrypt 无法通过 HTTP 验证您的域名。
+
+可能原因：
+1. 防火墙未开放 80 端口
+2. 云服务商安全组未放行 80 端口
+3. DNS 未正确解析到本服务器
+4. Nginx 未监听 80 端口
+
+解决步骤：
+1. 检查防火墙：sudo ufw allow 80
+2. 检查安全组：登录云服务商控制台
+3. 检查 DNS：nslookup 您的域名
+4. 检查 Nginx：sudo netstat -tlnp | grep :80
+
+详细日志：
+""" + output
+
+    # DNS 未解析
+    if "no valid a records found" in output_lower or "nxdomain" in output_lower:
+        return """❌ DNS 未正确解析
+
+该域名没有有效的 A 记录。
+
+解决步骤：
+1. 登录 DNS 服务商（如 Cloudflare、阿里云）
+2. 添加 A 记录指向本服务器 IP
+3. 等待 5-10 分钟让 DNS 生效
+4. 验证：dig 您的域名 或 nslookup 您的域名
+
+详细日志：
+""" + output
+
+    # 证书已存在但有问题
+    if "certificate already exists" in output_lower or "already exists" in output_lower:
+        return """⚠️ 证书文件冲突
+
+检测到证书残留文件，请使用"强制重新申请"功能清理后重试。
+
+详细日志：
+""" + output
+
+    # 后端连接失败
+    if "connection refused" in output_lower or "failed to connect" in output_lower:
+        return """❌ 后端服务连接失败
+
+无法连接到后端服务。
+
+检查步骤：
+1. 确认后端服务已启动
+2. 检查端口号是否正确
+3. 测试连接：curl http://127.0.0.1:端口号
+
+详细日志：
+""" + output
+
+    # Nginx 配置错误
+    if "nginx: configuration file" in output_lower and "test failed" in output_lower:
+        return """❌ Nginx 配置错误
+
+配置文件语法错误，已自动回滚。
+
+详细日志：
+""" + output
+
+    # 默认返回原始输出
+    return output
+
+
 def run_cmd(args: list[str], timeout: int = 90) -> dict[str, object]:
     try:
         proc = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-        return {"code": proc.returncode, "output": proc.stdout.strip()}
+        output = proc.stdout.strip()
+        # 对失败的命令使用友好错误提示
+        if proc.returncode != 0:
+            output = parse_friendly_error(output)
+        return {"code": proc.returncode, "output": output}
     except subprocess.TimeoutExpired as exc:
         output = exc.stdout or ""
         if isinstance(output, bytes):
             output = output.decode("utf-8", "replace")
-        return {"code": 124, "output": f"命令执行超时。\n{output}".strip()}
+        return {"code": 124, "output": f"❌ 命令执行超时（{timeout}秒）\n\n可能原因：\n1. 网络连接缓慢\n2. Let's Encrypt 服务响应慢\n3. 服务器负载过高\n\n部分输出：\n{output}".strip()}
     except OSError as exc:
-        return {"code": 127, "output": f"命令执行失败：{exc}"}
+        return {"code": 127, "output": f"❌ 命令执行失败\n\n错误：{exc}\n\n请确认：\n1. 相关命令已安装（nginx、certbot）\n2. 具有执行权限\n3. 系统资源充足"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1886,6 +2211,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/certs/renew":
             result = run_cmd([MANAGER_BIN, "renew", domain], timeout=180)
             self.send_json({"message": "证书续期完成", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/certs/force-reissue":
+            # 强制重新申请证书：先彻底删除，再重新申请
+            result = force_reissue_certificate(domain)
+            self.send_json({"message": "证书已重新申请", **result}, 200 if result["code"] == 0 else 500)
             return
 
         if path == "/api/certs/set-auto-renew":

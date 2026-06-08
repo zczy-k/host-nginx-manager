@@ -220,6 +220,7 @@ render_site_config() {
         conf+="    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;\n"
         conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
         conf+="    ssl_prefer_server_ciphers on;\n\n"
+        conf+="    location / {\n"
     else
         conf+="    location / {\n"
     fi
@@ -306,12 +307,59 @@ apply_site() {
 
 issue_cert() {
     local email_args=()
+    local force_renew=0
     require_certbot
+
+    # 完整的证书健康检查
+    if [[ -d "/etc/letsencrypt/live/$DOMAIN" ]]; then
+        local cert_file="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+        local key_file="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+        local cert_issue=""
+
+        # 1. 检查证书文件是否存在
+        if [[ ! -f "$cert_file" ]]; then
+            cert_issue="证书文件缺失"
+        # 2. 检查私钥文件是否存在
+        elif [[ ! -f "$key_file" ]]; then
+            cert_issue="私钥文件缺失"
+        # 3. 检查文件权限
+        elif [[ ! -r "$cert_file" ]] || [[ ! -r "$key_file" ]]; then
+            cert_issue="证书文件权限不足"
+        # 4. 检查证书是否过期
+        elif ! openssl x509 -in "$cert_file" -noout -checkend 0 >/dev/null 2>&1; then
+            cert_issue="证书已过期或损坏"
+        # 5. 检查证书域名是否匹配
+        elif ! openssl x509 -in "$cert_file" -noout -text 2>/dev/null | grep -qE "(DNS:|CN=).*$DOMAIN"; then
+            cert_issue="证书域名不匹配"
+        # 6. 检查证书和私钥是否匹配
+        else
+            local cert_modulus=$(openssl x509 -noout -modulus -in "$cert_file" 2>/dev/null | openssl md5)
+            local key_modulus=$(openssl rsa -noout -modulus -in "$key_file" 2>/dev/null | openssl md5)
+            if [[ -n "$cert_modulus" ]] && [[ -n "$key_modulus" ]] && [[ "$cert_modulus" != "$key_modulus" ]]; then
+                cert_issue="证书和私钥不匹配"
+            fi
+        fi
+
+        if [[ -n "$cert_issue" ]]; then
+            warn "证书检查失败：$cert_issue，将强制重新申请"
+            force_renew=1
+        else
+            info "证书已存在且健康，跳过申请"
+            return 0
+        fi
+    fi
 
     if [[ -n "$CERTBOT_EMAIL" ]]; then
         email_args=(--email "$CERTBOT_EMAIL")
     else
         email_args=(--register-unsafely-without-email)
+    fi
+
+    # 如果需要强制续期，添加 --force-renewal 参数
+    local extra_args=()
+    if [[ $force_renew -eq 1 ]]; then
+        extra_args=(--force-renewal)
+        warn "使用 --force-renewal 强制重新申请证书"
     fi
 
     certbot certonly \
@@ -320,7 +368,8 @@ issue_cert() {
         -d "$DOMAIN" \
         --non-interactive \
         --agree-tos \
-        "${email_args[@]}"
+        "${email_args[@]}" \
+        "${extra_args[@]}"
 }
 
 parse_add_options() {
@@ -388,18 +437,29 @@ cmd_add() {
     ensure_manager_dirs
     warn_if_domain_exists_elsewhere
 
-    section "写入 HTTP 站点"
+    section "步骤 1/4: 创建 HTTP 站点配置"
     local initial_ssl="$ENABLE_SSL"
     ENABLE_SSL=0
     save_state
     apply_site || die "写入 HTTP 站点配置失败"
+    log "HTTP 配置已创建"
 
     if [[ "$initial_ssl" == "1" ]]; then
-        section "申请证书并启用 HTTPS"
+        section "步骤 2/4: 申请 Let's Encrypt 证书"
+        info "正在向 Let's Encrypt 申请证书，这可能需要 30-60 秒..."
         issue_cert || die "certbot 证书申请失败"
+        log "证书申请成功"
+
+        section "步骤 3/4: 启用 HTTPS 配置"
         ENABLE_SSL=1
         save_state
         apply_site || die "启用 HTTPS 配置失败"
+        log "HTTPS 已启用"
+
+        section "步骤 4/4: 配置自动续期"
+        log "证书自动续期已启用（由 certbot.timer 管理）"
+    else
+        log "已跳过证书申请（使用 --no-ssl）"
     fi
 
     write_summary
@@ -458,7 +518,11 @@ cmd_enable_ssl() {
 
     validate_domain "$DOMAIN" || die "无效域名：$DOMAIN"
     load_state "$DOMAIN"
-    [[ "$ENABLE_SSL" == "1" ]] && warn "站点已启用 HTTPS，将重新确认证书和配置"
+
+    if [[ "$ENABLE_SSL" == "1" ]]; then
+        warn "站点已启用 HTTPS，将重新确认证书和配置"
+    fi
+
     if [[ -n "$cli_email" ]]; then
         CERTBOT_EMAIL="$cli_email"
     fi
@@ -467,7 +531,14 @@ cmd_enable_ssl() {
     save_state
     apply_site || die "更新 HTTP 站点失败"
 
-    issue_cert || die "certbot 证书申请失败"
+    # 检查证书是否已存在
+    if [[ -d "/etc/letsencrypt/live/$DOMAIN" ]]; then
+        info "检测到现有证书，将直接复用"
+    else
+        section "申请 Let's Encrypt 证书"
+        issue_cert || die "certbot 证书申请失败"
+    fi
+
     ENABLE_SSL=1
     save_state
     apply_site || die "启用 HTTPS 配置失败"
@@ -481,7 +552,16 @@ cmd_renew() {
     [[ "$ENABLE_SSL" == "1" ]] || die "该站点当前未启用 HTTPS，无法续期证书"
 
     section "续期证书"
-    issue_cert || die "certbot 证书续期失败"
+
+    # 使用 certbot renew 命令进行续期，而不是重新申请
+    if [[ -d "/etc/letsencrypt/live/$DOMAIN" ]]; then
+        info "使用 certbot renew 续期现有证书"
+        certbot renew --cert-name "$DOMAIN" --force-renewal --non-interactive || die "certbot 证书续期失败"
+    else
+        warn "证书目录不存在，将重新申请"
+        issue_cert || die "certbot 证书申请失败"
+    fi
+
     apply_site || die "续期后重新加载 HTTPS 配置失败"
     write_summary
 }
@@ -520,12 +600,31 @@ cmd_remove() {
 
     confirm "确认删除站点 $DOMAIN 吗？" || exit 0
 
+    # 删除 nginx 配置文件和状态文件
     rm -f "$(site_conf_enabled "$DOMAIN")" "$(site_conf_available "$DOMAIN")" "$(state_file "$DOMAIN")"
     validate_and_reload || die "删除站点后 nginx 校验失败，请手动检查"
 
+    # 彻底删除证书（包括 certbot 记录和证书文件）
     if [[ $DELETE_CERT -eq 1 ]] && command_exists certbot; then
-        certbot delete --cert-name "$DOMAIN" --non-interactive >/dev/null 2>&1 || true
-        info "已尝试删除 certbot 证书：$DOMAIN"
+        section "彻底清理证书"
+
+        # 1. 删除 certbot 证书记录
+        certbot delete --cert-name "$DOMAIN" --non-interactive 2>/dev/null || true
+
+        # 2. 强制删除证书目录（防止残留）
+        local cert_dirs=(
+            "/etc/letsencrypt/live/$DOMAIN"
+            "/etc/letsencrypt/archive/$DOMAIN"
+            "/etc/letsencrypt/renewal/$DOMAIN.conf"
+        )
+        for dir in "${cert_dirs[@]}"; do
+            if [[ -e "$dir" ]]; then
+                rm -rf "$dir"
+                info "已删除：$dir"
+            fi
+        done
+
+        log "证书已彻底清理：$DOMAIN"
     fi
 
     log "站点已删除：$DOMAIN"
