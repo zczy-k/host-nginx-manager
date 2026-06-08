@@ -16,6 +16,7 @@ import secrets
 import socket
 import ssl
 import subprocess
+import tarfile
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -241,8 +242,7 @@ APP_HTML = r'''<!doctype html>
             <option value="cert_warn">证书预警</option>
             <option value="dns_bad">DNS 异常</option>
             <option value="managed">受管站点</option>
-            <option value="imported">已接管</option>
-            <option value="importable">可接管</option>
+            <option value="can_manage">可管理站点</option>
             <option value="https">HTTPS</option>
             <option value="http">HTTP</option>
           </select>
@@ -551,8 +551,7 @@ function siteMatchesFilter(site){
     case 'cert_warn': return CERT_WARN_STATES.has(site.cert_status);
     case 'dns_bad': return hasDnsIssue(site);
     case 'managed': return !!site.managed;
-    case 'imported': return !!site.imported;
-    case 'importable': return !!site.importable;
+    case 'can_manage': return !!site.can_manage;
     case 'https': return !!site.https;
     case 'http': return !site.https;
     default: return true;
@@ -561,7 +560,17 @@ function siteMatchesFilter(site){
 function getFilteredSites(){
   if(!state){ return []; }
   const query = String(siteQuery || '').trim().toLowerCase();
-  return state.sites.filter(site => siteMatchesFilter(site) && (!query || siteSearchText(site).includes(query)));
+  return state.sites
+    .filter(site => !isSystemSite(site))  // 隐藏系统站点
+    .filter(site => siteMatchesFilter(site) && (!query || siteSearchText(site).includes(query)));
+}
+function isSystemSite(site){
+  const domain = String(site.domain || '');
+  // 隐藏默认站点
+  if (domain === '(默认站点)' || domain === 'default_server') return true;
+  // 隐藏只监听localhost的nginx服务（非反向代理）
+  if (site.kind === 'Nginx 服务' && !site.managed && !site.can_manage) return true;
+  return false;
 }
 function isCertificateSite(site){
   const domain = String(site.domain || '');
@@ -583,7 +592,7 @@ function certificateMatchesFilter(site){
   switch (certFilter) {
     case 'issues': return !site.https || CERT_WARN_STATES.has(site.cert_status) || hasDnsIssue(site);
     case 'enabled': return !!site.https;
-    case 'needs_https': return !site.https && !!site.managed && !site.imported;
+    case 'needs_https': return !site.https && !!site.managed;
     case 'ok': return site.cert_status === 'ok';
     case 'warn': return site.cert_status === 'warn';
     case 'missing': return site.cert_status === 'missing';
@@ -649,19 +658,22 @@ function renderIssueRows(){
     const actionDomain = String(site.managed_domain || site.domain || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const actionSource = String(site.source || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     let actions = `<button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
-    if (issue.kind === 'dns' && site.importable) {
-      actions = `<button class="btn small primary" onclick="importSite('${actionDomain}', '${actionSource}')">先接管</button><button class="btn small danger" onclick="commentOutConfig('${actionDomain}', '${actionSource}')">注释配置</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
-    } else if (issue.kind === 'dns' && (site.imported || site.migrated)) {
-      actions = `<button class="btn small danger" onclick="removeImportedSite('${actionDomain}')">删除失效配置</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
-    } else if ((issue.kind === 'cert_warn' || issue.kind === 'cert_bad') && site.managed && !site.imported) {
+
+    // 可纳入管理的站点
+    if (site.can_manage && (issue.kind === 'dns' || issue.kind === 'backend')) {
+      actions = `<button class="btn small primary" onclick="takeOverSite('${actionDomain}', '${actionSource}')">纳入管理</button><button class="btn small danger" onclick="commentOutConfig('${actionDomain}', '${actionSource}')">注释配置</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
+    }
+    // 受管站点的问题
+    else if (site.managed && (issue.kind === 'dns' || issue.kind === 'backend')) {
+      actions = `<button class="btn small danger" onclick="removeSite('${actionDomain}')">删除站点</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
+    }
+    // 证书问题
+    else if ((issue.kind === 'cert_warn' || issue.kind === 'cert_bad') && site.managed) {
       actions = site.https
         ? `<button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`
         : `<button class="btn small primary" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
-    } else if (issue.kind === 'backend' && (site.imported || site.migrated)) {
-      actions = `<button class="btn small danger" onclick="removeImportedSite('${actionDomain}')">删除失效配置</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
-    } else if (issue.kind === 'backend' && site.importable) {
-      actions = `<button class="btn small primary" onclick="importSite('${actionDomain}', '${actionSource}')">先接管</button><button class="btn small danger" onclick="commentOutConfig('${actionDomain}', '${actionSource}')">注释配置</button><button class="btn small" type="button" onclick="focusSite('${focusDomain}')">定位站点</button>`;
     }
+
     const tagClass = issue.severity === 'warn' ? 'warn' : 'bad';
     return `<tr><td><strong>${escapeHtml(issue.domain)}</strong></td><td><span class="tag ${tagClass}">${issueLabel(issue)}</span></td><td>${escapeHtml(issue.detail)}<div class="muted">${escapeHtml(site.source || '-')}</div></td><td class="row">${actions}</td></tr>`;
   }).join('');
@@ -750,7 +762,7 @@ function render(){
     const target = s.upstream || s.root || '-';
 
     // 状态标签
-    const owner = s.managed ? `<span class="tag ok">${s.migrated || !s.imported ? '受管' : '已接管'}</span>` : '<span class="tag">现有</span>';
+    const owner = s.managed ? '<span class="tag ok">🟢 受管</span>' : (s.can_manage ? '<span class="tag">🔵 可管理</span>' : '<span class="tag">只读</span>');
     const https = s.https ? '<span class="tag ok">HTTPS</span>' : '<span class="tag warn">HTTP</span>';
     const backendTag = s.backend_status === 'ok' ? '<span class="tag ok">后端正常</span>' : (s.backend_status === 'bad' ? '<span class="tag bad">后端异常</span>' : '');
     const certTag = s.cert_status === 'ok'
@@ -767,14 +779,10 @@ function render(){
     const kindInfo = s.kind || 'Nginx 服务';
 
     let actions = '<span class="muted">只读</span>';
-    if (s.migrated) {
-      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small danger" onclick="removeImportedSite('${actionDomain}')">删除</button>`;
-    } else if (s.managed && !s.imported) {
-      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small" onclick="enableSsl('${actionDomain}')">启用HTTPS</button><button class="btn small" onclick="disableSsl('${actionDomain}')">关闭HTTPS</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`;
-    } else if (s.imported) {
-      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small" onclick="migrateSite('${actionDomain}')">迁移为受管</button><button class="btn small danger" onclick="removeImportedSite('${actionDomain}')">删除</button>`;
-    } else if (s.importable) {
-      actions = `<button class="btn small primary" onclick="importSite('${actionDomain}', '${actionSource}')">导入/接管</button>`;
+    if (s.managed) {
+      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`;
+    } else if (s.can_manage) {
+      actions = `<button class="btn small primary" onclick="takeOverSite('${actionDomain}', '${actionSource}')">纳入管理</button>`;
     } else if (s.readonly_reason) {
       actions = `<span class="muted">${escapeHtml(s.readonly_reason)}</span>`;
     }
@@ -800,11 +808,9 @@ async function action(path, body){ $('#output').textContent='执行中...'; cons
 async function enableSsl(domain){ const email = prompt('证书邮箱，可留空'); await action('/api/sites/enable-ssl',{domain,email:email||''}); }
 async function editSite(domain, currentTarget){ const target = prompt('新的后端地址，例如 127.0.0.1:3002 或 http://127.0.0.1:3002', currentTarget || ''); if(target) await action('/api/sites/update',{domain,target}); }
 async function disableSsl(domain){ if(confirm('确认关闭 HTTPS？')) await action('/api/sites/disable-ssl',{domain}); }
-async function removeSite(domain){ if(confirm('确认删除站点？')) await action('/api/sites/remove',{domain, delete_cert:false}); }
-async function removeImportedSite(domain){ if(confirm('确认删除这个导入/迁移的站点？\n\n操作将：\n1. 删除状态文件\n2. 自动注释原配置（如果可以定位）\n3. 创建备份文件\n\n建议删除前先检查该站点是否还在使用。')) await action('/api/sites/remove-imported',{domain, comment_out:true}); }
+async function removeSite(domain){ if(confirm('⚠️ 确认删除这个站点？\n\n操作将：\n✓ 立即停止网站运行\n✓ 删除nginx配置文件\n✓ 自动创建备份\n✓ 保留SSL证书\n\n提示：可在"维护"界面恢复已删除的站点。')) await action('/api/sites/remove',{domain, delete_cert:false}); }
 async function commentOutConfig(domain, source){ if(confirm(`确认注释掉这个nginx配置？\n\n域名: ${domain}\n配置文件: ${source}\n\n操作将：\n1. 注释掉该server块\n2. 创建备份文件\n3. 重载nginx\n\n该配置不会被删除，只是被注释。`)) await action('/api/nginx/comment-out',{domain, source}); }
-async function importSite(domain, source){ if(confirm('确认导入这个已有反向代理站点？导入不会删除原 nginx 配置。')) await action('/api/sites/import',{domain, source}); }
-async function migrateSite(domain){ if(confirm('确认将这个已接管站点迁移为工具受管配置？会备份并注释原始配置块。')) await action('/api/sites/migrate',{domain}); }
+async function takeOverSite(domain, source){ if(confirm(`确认纳入管理？\n\n域名: ${domain}\n\n操作将自动完成：\n✓ 创建工具受管配置\n✓ 注释原始nginx配置\n✓ 保持网站正常运行\n✓ 可立即编辑和管理证书\n\n纳入后可随时编辑、删除此站点。`)) await action('/api/sites/take-over',{domain, source}); }
 async function renewCert(domain){ if(confirm('确认续期该域名的证书？\n\n这将重新向 Let\'s Encrypt 申请证书，通常在证书即将过期时使用。')) await action('/api/certs/renew',{domain}); }
 async function setAutoRenew(domain, enable) {
   try {
@@ -1248,7 +1254,8 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
     else:
         kind = "Nginx 服务"
 
-    importable = bool(
+    # 判断是否可以纳入管理：非受管的反向代理站点
+    can_manage = bool(
         not managed
         and kind == "反向代理"
         and import_domain
@@ -1256,16 +1263,16 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
         and upstream_target
         and "$" not in upstream
     )
-    if importable:
-        readonly_reason = ""
-    elif managed:
+
+    # 只读原因
+    if managed or can_manage:
         readonly_reason = ""
     elif kind != "反向代理":
-        readonly_reason = "特殊配置"
+        readonly_reason = "非反向代理"
     elif not import_domain:
-        readonly_reason = "特殊配置"
+        readonly_reason = "缺少域名"
     elif "$" in upstream:
-        readonly_reason = "变量代理"
+        readonly_reason = "包含变量"
     else:
         readonly_reason = "只读"
 
@@ -1278,9 +1285,7 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
         "kind": kind,
         "https": https,
         "managed": managed,
-        "imported": managed_state.get("IMPORTED") == "1",
-        "migrated": managed_state.get("MIGRATED") == "1",
-        "importable": importable,
+        "can_manage": can_manage,
         "readonly_reason": readonly_reason,
         "source": source,
         "managed_domain": managed_domain,
@@ -1353,9 +1358,7 @@ def list_nginx_servers() -> list[dict[str, object]]:
                 "kind": "反向代理",
                 "https": site.get("ENABLE_SSL") == "1",
                 "managed": True,
-                "imported": site.get("IMPORTED") == "1",
-                "migrated": site.get("MIGRATED") == "1",
-                "importable": False,
+                "can_manage": False,
                 "readonly_reason": "",
                 "source": "状态文件，当前 nginx 配置未发现",
                 "managed_domain": domain,
@@ -1381,51 +1384,55 @@ def write_managed_state(domain: str, values: dict[str, str]) -> pathlib.Path:
         f"PROXY_SEND_TIMEOUT={values.get('PROXY_SEND_TIMEOUT', '300s')}",
         f"WEBSOCKET={values.get('WEBSOCKET', '1')}",
         f"BACKEND_INSECURE={values.get('BACKEND_INSECURE', '0')}",
-        f"IMPORTED={values.get('IMPORTED', '0')}",
-        f"MIGRATED={values.get('MIGRATED', '0')}",
+        f"AUTO_RENEW={values.get('AUTO_RENEW', '1')}",
     ]
-    if values.get("IMPORTED_SOURCE"):
-        lines.append(f"IMPORTED_SOURCE={values['IMPORTED_SOURCE']}")
-    if values.get("MIGRATED_FROM"):
-        lines.append(f"MIGRATED_FROM={values['MIGRATED_FROM']}")
     lines.append("")
     state_path.write_text("\n".join(lines), encoding="utf-8")
     os.chmod(state_path, 0o600)
     return state_path
 
 
-def import_existing_site(domain: str, source: str) -> dict[str, object]:
+def take_over_site(domain: str, source: str) -> dict[str, object]:
+    """纳入管理：将已有nginx站点纳入工具管理（自动完成迁移）"""
     domain = domain.strip().lower()
     if not DOMAIN_RE.match(domain):
-        return {"code": 2, "output": "域名无效，不能导入"}
+        return {"code": 2, "output": "域名无效"}
 
     servers = list_nginx_servers()
     server = next((item for item in servers if item.get("domain") == domain and item.get("source") == source), None)
     if not server:
         return {"code": 3, "output": "未找到对应 nginx 站点，请刷新后重试"}
-    if not server.get("importable"):
-        return {"code": 4, "output": f"该站点属于特殊配置或已受管，不能自动接管：{server.get('readonly_reason') or '只读'}"}
+    if not server.get("can_manage"):
+        return {"code": 4, "output": f"该站点不能纳入管理：{server.get('readonly_reason') or '只读'}"}
 
     upstream_scheme = str(server.get("upstream_scheme") or "")
     upstream_target = str(server.get("upstream_target") or "")
     if upstream_scheme not in {"http", "https"} or not re.match(r"^[^/:]+:\d+$", upstream_target):
-        return {"code": 5, "output": "只支持导入明确的 http/https HOST:PORT 反向代理"}
+        return {"code": 5, "output": "只支持纳入明确的 http/https HOST:PORT 反向代理"}
 
-    write_managed_state(domain, {
-        "UPSTREAM": upstream_target,
-        "UPSTREAM_SCHEME": upstream_scheme,
-        "ENABLE_SSL": "1" if server.get("https") else "0",
-        "CERTBOT_EMAIL": "",
-        "CLIENT_MAX_BODY_SIZE": "64m",
-        "PROXY_READ_TIMEOUT": "300s",
-        "PROXY_SEND_TIMEOUT": "300s",
-        "WEBSOCKET": "1",
-        "BACKEND_INSECURE": "0",
-        "IMPORTED": "1",
-        "MIGRATED": "0",
-        "IMPORTED_SOURCE": source,
-    })
-    return {"code": 0, "output": f"已导入：{domain} -> {upstream_scheme}://{upstream_target}"}
+    # 使用管理脚本创建受管配置
+    args = [MANAGER_BIN, "add", domain, upstream_target, "--upstream-scheme", upstream_scheme]
+    if not server.get("https"):
+        args.append("--no-ssl")
+
+    result = run_cmd(args, timeout=120)
+    if result["code"] != 0:
+        return {"code": 6, "output": f"创建受管配置失败：\n{result['output']}"}
+
+    # 注释原配置
+    source_path = pathlib.Path(source)
+    if source_path.is_file() and str(source_path).startswith("/etc/nginx/"):
+        comment_result = comment_out_nginx_config(domain, source)
+        if comment_result["code"] != 0:
+            return {"code": 0, "output": f"已纳入管理：{domain}\n但原配置注释失败，请手动检查：{source}"}
+        return {"code": 0, "output": f"已纳入管理：{domain} -> {upstream_scheme}://{upstream_target}\n原配置已注释：{source}"}
+
+    return {"code": 0, "output": f"已纳入管理：{domain} -> {upstream_scheme}://{upstream_target}"}
+
+
+def find_imported_server_block(lines: list[str], domain: str) -> tuple[int, int]:
+
+    return {"code": 0, "output": f"已纳入管理：{domain} -> {upstream_scheme}://{upstream_target}"}
 
 
 def find_imported_server_block(lines: list[str], domain: str) -> tuple[int, int]:
@@ -1457,130 +1464,6 @@ def find_imported_server_block(lines: list[str], domain: str) -> tuple[int, int]
                 block = []
                 block_start = -1
     return -1, -1
-
-
-def update_imported_site(domain: str, target: str) -> dict[str, object]:
-    domain = domain.strip().lower()
-    scheme, upstream = parse_edit_target(target)
-    if not DOMAIN_RE.match(domain) or not scheme or not upstream:
-        return {"code": 2, "output": "域名或后端地址无效"}
-
-    state_path = STATE_DIR / f"{domain}.env"
-    state = parse_state_file(state_path)
-    if state.get("IMPORTED") != "1" and state.get("MIGRATED") != "1":
-        return {"code": 3, "output": "该站点不是导入/迁移站点"}
-
-    source = state.get("IMPORTED_SOURCE", "")
-    if not source:
-        server = next((item for item in list_nginx_servers() if item.get("domain") == domain), None)
-        source = str(server.get("source", "")) if server else ""
-    source_path = pathlib.Path(source)
-    if not source_path.is_file() or not str(source_path).startswith("/etc/nginx/"):
-        return {"code": 4, "output": "找不到可编辑的原始 nginx 配置文件"}
-
-    lines = source_path.read_text(encoding="utf-8").splitlines()
-    start, end = find_imported_server_block(lines, domain)
-    if start < 0:
-        return {"code": 5, "output": "未能在原配置里定位到可安全编辑的反向代理块"}
-
-    changed = False
-    for index in range(start, end + 1):
-        match = re.match(r"^(\s*)proxy_pass\s+.+?;(\s*)$", lines[index])
-        if match:
-            lines[index] = f"{match.group(1)}proxy_pass {scheme}://{upstream};{match.group(2)}"
-            changed = True
-            break
-    if not changed:
-        return {"code": 6, "output": "未找到 proxy_pass，无法编辑"}
-
-    backup_path = source_path.with_name(f"{source_path.name}.bak-{int(time.time())}")
-    original = source_path.read_text(encoding="utf-8")
-    backup_path.write_text(original, encoding="utf-8")
-    source_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    test = run_cmd(["nginx", "-t"], timeout=20)
-    if test["code"] != 0:
-        source_path.write_text(original, encoding="utf-8")
-        return {"code": 7, "output": f"nginx 配置校验失败，已回滚。\n{test['output']}"}
-    reload_result = run_cmd(["systemctl", "reload", "nginx"], timeout=20)
-    if reload_result["code"] != 0:
-        reload_result = run_cmd(["nginx", "-s", "reload"], timeout=20)
-
-    write_managed_state(domain, {
-        **state,
-        "UPSTREAM": upstream,
-        "UPSTREAM_SCHEME": scheme,
-        "IMPORTED_SOURCE": str(source_path),
-    })
-    output = f"已更新原 nginx 配置：{domain} -> {scheme}://{upstream}\n备份：{backup_path}\n{reload_result['output']}".strip()
-    return {"code": reload_result["code"], "output": output}
-
-
-def migrate_imported_site(domain: str) -> dict[str, object]:
-    domain = domain.strip().lower()
-    if not DOMAIN_RE.match(domain):
-        return {"code": 2, "output": "域名无效"}
-
-    state_path = STATE_DIR / f"{domain}.env"
-    state = parse_state_file(state_path)
-    if state.get("IMPORTED") != "1":
-        return {"code": 3, "output": "该站点不是已导入状态，不能迁移"}
-
-    source = state.get("IMPORTED_SOURCE", "")
-    source_path = pathlib.Path(source)
-    if not source_path.is_file() or not str(source_path).startswith("/etc/nginx/"):
-        return {"code": 4, "output": "找不到可迁移的原始 nginx 配置文件"}
-
-    lines = source_path.read_text(encoding="utf-8").splitlines()
-    start, end = find_imported_server_block(lines, domain)
-    if start < 0:
-        return {"code": 5, "output": "未能在原配置里定位到可迁移的反向代理块"}
-
-    available_path = pathlib.Path(f"/etc/nginx/sites-available/vpspm-{domain}.conf")
-    enabled_path = pathlib.Path(f"/etc/nginx/sites-enabled/vpspm-{domain}.conf")
-    if available_path.exists() or enabled_path.exists():
-        return {"code": 6, "output": "目标受管配置已存在，请先检查是否已经迁移过"}
-
-    block_lines = lines[start:end + 1]
-    migrated_lines = lines[:]
-    for index in range(start, end + 1):
-        migrated_lines[index] = f"# migrated by host-nginx-manager: {lines[index]}"
-
-    original = source_path.read_text(encoding="utf-8")
-    backup_path = source_path.with_name(f"{source_path.name}.bak-{int(time.time())}")
-    backup_path.write_text(original, encoding="utf-8")
-    source_path.write_text("\n".join(migrated_lines) + "\n", encoding="utf-8")
-
-    available_path.parent.mkdir(parents=True, exist_ok=True)
-    enabled_path.parent.mkdir(parents=True, exist_ok=True)
-    available_path.write_text("\n".join(block_lines) + "\n", encoding="utf-8")
-    os.chmod(available_path, 0o644)
-    if enabled_path.exists() or enabled_path.is_symlink():
-        enabled_path.unlink()
-    enabled_path.symlink_to(available_path)
-
-    test = run_cmd(["nginx", "-t"], timeout=20)
-    if test["code"] != 0:
-        source_path.write_text(original, encoding="utf-8")
-        if enabled_path.exists() or enabled_path.is_symlink():
-            enabled_path.unlink()
-        if available_path.exists():
-            available_path.unlink()
-        return {"code": 7, "output": f"迁移后的 nginx 配置校验失败，已回滚。\n{test['output']}"}
-
-    reload_result = run_cmd(["systemctl", "reload", "nginx"], timeout=20)
-    if reload_result["code"] != 0:
-        reload_result = run_cmd(["nginx", "-s", "reload"], timeout=20)
-
-    write_managed_state(domain, {
-        **state,
-        "IMPORTED": "0",
-        "MIGRATED": "1",
-        "IMPORTED_SOURCE": str(available_path),
-        "MIGRATED_FROM": str(source_path),
-    })
-    output = f"已迁移为受管站点：{domain}\n原配置备份：{backup_path}\n新配置：{available_path}\n{reload_result['output']}".strip()
-    return {"code": reload_result["code"], "output": output}
 
 
 def comment_out_nginx_config(domain: str, source: str) -> dict[str, object]:
@@ -1663,100 +1546,54 @@ def comment_out_nginx_config(domain: str, source: str) -> dict[str, object]:
     return {"code": reload_result["code"], "output": output}
 
 
-def remove_imported_site(domain: str, comment_out: bool = True) -> dict[str, object]:
-    """删除已导入的站点配置，可选择注释或完全删除原配置"""
+def remove_site_with_backup(domain: str, delete_cert: bool = False) -> dict[str, object]:
+    """删除受管站点（真正删除，自动备份）"""
     domain = domain.strip().lower()
     if not DOMAIN_RE.match(domain):
-        return {"code": 2, "output": "域名无效"}
+        return {"code": 1, "output": "域名无效"}
 
     state_path = STATE_DIR / f"{domain}.env"
     if not state_path.exists():
-        return {"code": 3, "output": "状态文件不存在"}
+        return {"code": 2, "output": "状态文件不存在，该站点不是受管站点"}
 
-    state = parse_state_file(state_path)
-    is_imported = state.get("IMPORTED") == "1"
-    is_migrated = state.get("MIGRATED") == "1"
+    # 创建备份目录
+    backup_dir = pathlib.Path("/opt/host-nginx-manager/backups")
+    backup_dir.mkdir(parents=True, exist_ok=True)
 
-    if not is_imported and not is_migrated:
-        return {"code": 4, "output": "该站点不是导入/迁移站点，请使用标准删除功能"}
+    timestamp = int(time.time())
+    backup_file = backup_dir / f"{domain}-{timestamp}.tar.gz"
 
-    # 删除状态文件
-    state_path.unlink()
+    # 备份状态文件和配置文件
+    try:
+        with tarfile.open(backup_file, "w:gz") as tar:
+            # 备份状态文件
+            if state_path.exists():
+                tar.add(state_path, arcname=f"{domain}.env")
 
-    source = state.get("IMPORTED_SOURCE", "")
-    if not source:
-        return {"code": 0, "output": f"已删除状态文件：{domain}\n原始配置文件未知，请手动检查 nginx 配置"}
+            # 备份nginx配置
+            available = pathlib.Path(f"/etc/nginx/sites-available/vpspm-{domain}.conf")
+            enabled = pathlib.Path(f"/etc/nginx/sites-enabled/vpspm-{domain}.conf")
+            if available.exists():
+                tar.add(available, arcname=f"vpspm-{domain}.conf")
 
-    source_path = pathlib.Path(source)
+            # 备份证书
+            cert_dir = pathlib.Path(f"/etc/letsencrypt/live/{domain}")
+            if cert_dir.exists():
+                tar.add(cert_dir, arcname=f"certs/{domain}")
+    except Exception as e:
+        return {"code": 3, "output": f"创建备份失败：{e}"}
 
-    # 如果是迁移后的受管配置，直接删除
-    if is_migrated and str(source_path).startswith("/etc/nginx/sites-"):
-        try:
-            available_path = pathlib.Path(f"/etc/nginx/sites-available/vpspm-{domain}.conf")
-            enabled_path = pathlib.Path(f"/etc/nginx/sites-enabled/vpspm-{domain}.conf")
+    # 使用管理脚本删除
+    args = [MANAGER_BIN, "remove", domain, "--yes"]
+    if delete_cert:
+        args.append("--delete-cert")
 
-            if enabled_path.exists() or enabled_path.is_symlink():
-                enabled_path.unlink()
-            if available_path.exists():
-                available_path.unlink()
+    result = run_cmd(args, timeout=90)
 
-            test = run_cmd(["nginx", "-t"], timeout=20)
-            if test["code"] != 0:
-                return {"code": 5, "output": f"删除受管配置后 nginx 校验失败。\n{test['output']}"}
-
-            reload_result = run_cmd(["systemctl", "reload", "nginx"], timeout=20)
-            if reload_result["code"] != 0:
-                reload_result = run_cmd(["nginx", "-s", "reload"], timeout=20)
-
-            return {"code": 0, "output": f"已删除站点：{domain}\n已删除：{available_path}\n{reload_result['output']}".strip()}
-        except Exception as exc:
-            return {"code": 6, "output": f"删除受管配置时出错：{exc}"}
-
-    # 对于导入的配置，尝试注释掉原始配置
-    if not source_path.is_file():
-        return {"code": 0, "output": f"已删除状态文件：{domain}\n原配置文件不存在：{source}"}
-
-    if not str(source_path).startswith("/etc/nginx/"):
-        return {"code": 7, "output": f"原配置文件不在 /etc/nginx/ 目录，不自动修改：{source}"}
-
-    # 尝试找到并注释配置块
-    lines = source_path.read_text(encoding="utf-8").splitlines()
-    start, end = find_imported_server_block(lines, domain)
-
-    if start < 0:
-        # 可能是在 stream 块或其他位置，尝试简单搜索
-        found_lines = []
-        for idx, line in enumerate(lines):
-            if domain in line:
-                found_lines.append(f"行 {idx + 1}: {line.strip()}")
-
-        hint = "\n".join(found_lines[:5]) if found_lines else "未找到"
-        return {"code": 0, "output": f"已删除状态文件：{domain}\n\n无法自动定位配置块，请手动编辑：{source}\n可能的位置：\n{hint}"}
-
-    if comment_out:
-        # 注释掉配置块
-        commented_lines = lines[:]
-        for index in range(start, end + 1):
-            if not lines[index].strip().startswith("#"):
-                commented_lines[index] = f"# REMOVED: {lines[index]}"
-
-        backup_path = source_path.with_name(f"{source_path.name}.bak-{int(time.time())}")
-        original = source_path.read_text(encoding="utf-8")
-        backup_path.write_text(original, encoding="utf-8")
-        source_path.write_text("\n".join(commented_lines) + "\n", encoding="utf-8")
-
-        test = run_cmd(["nginx", "-t"], timeout=20)
-        if test["code"] != 0:
-            source_path.write_text(original, encoding="utf-8")
-            return {"code": 8, "output": f"注释配置后 nginx 校验失败，已回滚。\n{test['output']}"}
-
-        reload_result = run_cmd(["systemctl", "reload", "nginx"], timeout=20)
-        if reload_result["code"] != 0:
-            reload_result = run_cmd(["nginx", "-s", "reload"], timeout=20)
-
-        return {"code": 0, "output": f"已删除站点：{domain}\n已注释原配置：{source} (行 {start+1}-{end+1})\n备份：{backup_path}\n{reload_result['output']}".strip()}
+    if result["code"] == 0:
+        return {"code": 0, "output": f"已删除站点：{domain}\n备份已保存：{backup_file}\n{result['output']}"}
     else:
-        return {"code": 0, "output": f"已删除状态文件：{domain}\n请手动编辑配置文件删除相关配置：{source} (行 {start+1}-{end+1})"}
+        return {"code": 4, "output": f"删除失败：\n{result['output']}\n备份已保存：{backup_file}"}
 
 
 def run_cmd(args: list[str], timeout: int = 90) -> dict[str, object]:
@@ -1926,14 +1763,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         domain = str(data.get("domain", "")).strip()
-        if path == "/api/sites/import":
-            result = import_existing_site(domain, str(data.get("source", "")).strip())
-            self.send_json({"message": "站点已导入", **result}, 200 if result["code"] == 0 else 400)
-            return
-
-        if path == "/api/sites/migrate":
-            result = migrate_imported_site(domain)
-            self.send_json({"message": "站点已迁移", **result}, 200 if result["code"] == 0 else 400)
+        if path == "/api/sites/take-over":
+            result = take_over_site(domain, str(data.get("source", "")).strip())
+            self.send_json({"message": "站点已纳入管理", **result}, 200 if result["code"] == 0 else 400)
             return
 
         if path == "/api/sites/update":
@@ -1941,11 +1773,7 @@ class Handler(BaseHTTPRequestHandler):
             if not scheme or not upstream:
                 self.send_json({"error": "后端地址必须是 HOST:PORT 或 http(s)://HOST:PORT"}, 400)
                 return
-            state = parse_state_file(STATE_DIR / f"{domain.strip().lower()}.env")
-            if state.get("IMPORTED") == "1" or state.get("MIGRATED") == "1":
-                result = update_imported_site(domain, f"{scheme}://{upstream}")
-            else:
-                result = run_cmd([MANAGER_BIN, "update", domain, upstream, "--upstream-scheme", scheme], timeout=120)
+            result = run_cmd([MANAGER_BIN, "update", domain, upstream, "--upstream-scheme", scheme], timeout=120)
             self.send_json({"message": "站点已更新", **result}, 200 if result["code"] == 0 else 500)
             return
 
@@ -1979,17 +1807,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/sites/remove":
-            args = [MANAGER_BIN, "remove", domain, "--yes"]
-            if data.get("delete_cert"):
-                args.append("--delete-cert")
-            result = run_cmd(args, timeout=90)
+            delete_cert = data.get("delete_cert", False)
+            result = remove_site_with_backup(domain, delete_cert)
             self.send_json({"message": "站点已删除", **result}, 200 if result["code"] == 0 else 500)
-            return
-
-        if path == "/api/sites/remove-imported":
-            comment_out = data.get("comment_out", True)
-            result = remove_imported_site(domain, comment_out)
-            self.send_json({"message": "已删除导入站点", **result}, 200 if result["code"] == 0 else 400)
             return
 
         if path == "/api/nginx/comment-out":
