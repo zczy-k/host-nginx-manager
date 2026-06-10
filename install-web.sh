@@ -159,7 +159,11 @@ do_upgrade() {
         # shellcheck disable=SC1090
         . "$ENV_FILE"
         info "管理地址: http://${HNG_WEB_BIND}:${HNG_WEB_PORT}"
-        info "管理密码: $HNG_WEB_PASSWORD"
+        if [[ -n "${HNG_WEB_PASSWORD:-}" ]]; then
+            info "管理密码: $HNG_WEB_PASSWORD"
+        else
+            info "密码已加密存储（查看 $ENV_FILE 中的 HNG_WEB_PASSWORD_HASH）"
+        fi
     fi
 
     echo ""
@@ -235,16 +239,25 @@ do_install() {
 
     # 生成新的密码和密钥（全新安装）
     info "生成新的密码和密钥..."
-    local password secret
+    local password secret password_hash
     password="$(generate_secret)"
     secret="$(generate_secret)"
+
+    # 生成密码 hash
+    info "生成密码 hash..."
+    password_hash=$(python3 -c "
+import base64, hashlib, secrets
+salt = secrets.token_bytes(32)
+pwdhash = hashlib.pbkdf2_hmac('sha256', '$password'.encode(), salt, 100000)
+print(base64.b64encode(salt + pwdhash).decode('ascii'))
+")
 
     info "生成配置文件..."
     cat > "$ENV_FILE" <<EOF
 HNG_MANAGER_BIN=$MANAGER_BIN
 HNG_WEB_BIND=$BIND_ADDR
 HNG_WEB_PORT=$PORT
-HNG_WEB_PASSWORD=$password
+HNG_WEB_PASSWORD_HASH=$password_hash
 HNG_WEB_SECRET=$secret
 EOF
     chmod 0600 "$ENV_FILE"
