@@ -1074,8 +1074,9 @@ async function changePassword(e){
 
   try{
     await api('/api/account/change-password', {method:'POST', body:JSON.stringify({currentPassword:current, newPassword:newPass})});
-    showMsg('✓ 密码修改成功！2秒后将跳转到登录页面', 'ok');
-    setTimeout(() => { window.location.href = '/login'; }, 2000);
+    showMsg('✓ 密码修改成功！正在退出登录...', 'ok');
+    await api('/api/logout', {method:'POST', body:'{}'});
+    setTimeout(() => { window.location.href = '/login'; }, 1000);
   }catch(e){
     showMsg('✗ 密码修改失败：' + (e.message || '未知错误'), 'bad');
     btn.disabled = false;
