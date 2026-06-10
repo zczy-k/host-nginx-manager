@@ -359,7 +359,26 @@ APP_HTML = r'''<!doctype html>
     </section>
     <section id="tools" class="view">
       <div class="grid">
-        <div class="panel"><h2>nginx 维护</h2><div class="row"><button class="btn" id="testBtn">测试配置</button><button class="btn primary" id="reloadBtn">重载 nginx</button></div></div>
+        <div class="panel">
+          <h2>nginx 维护</h2>
+          <div class="row">
+            <button class="btn" id="testBtn">测试配置</button>
+            <button class="btn primary" id="reloadBtn">重载 nginx</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>配置备份</h2>
+          <div class="row">
+            <button class="btn primary" onclick="createBackup()">创建备份</button>
+            <button class="btn" onclick="showBackupList()">查看备份</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>健康检查</h2>
+          <div class="row">
+            <button class="btn primary" onclick="runHealthCheck()">全站检查</button>
+          </div>
+        </div>
         <div class="panel"><h2>输出</h2><pre id="output">等待操作...</pre></div>
       </div>
     </section>
@@ -1139,6 +1158,23 @@ async function confirmRenameSite(domain, modalEl){
 
   modalEl.remove();
   await action('/api/sites/rename', {domain, new_domain: newDomain, new_upstream: newUpstream, delete_old_cert: deleteOldCert});
+}
+async function createBackup(){
+  if(!confirm('确认创建配置备份？\n\n将备份以下内容：\n• 所有站点配置\n• Nginx 配置文件\n• SSL 证书')) return;
+  await action('/api/backup/create', {});
+}
+async function showBackupList(){
+  const res = await fetch('/api/backup/list', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+  const data = await res.json();
+  if(data.code === 0){
+    alert(data.output || '备份列表为空');
+  } else {
+    alert('获取备份列表失败：\n' + (data.output || data.error));
+  }
+}
+async function runHealthCheck(){
+  if(!confirm('确认运行健康检查？\n\n将检查所有站点的：\n• 后端连接\n• DNS 解析\n• 证书有效期\n• Nginx 配置')) return;
+  await action('/api/health/check', {domain: ''});
 }
 async function commentOutConfig(domain, source){ if(confirm(`确认注释掉这个nginx配置？\n\n域名: ${domain}\n配置文件: ${source}\n\n操作将：\n1. 注释掉该server块\n2. 创建备份文件\n3. 重载nginx\n\n该配置不会被删除，只是被注释。`)) await action('/api/nginx/comment-out',{domain, source}); }
 async function takeOverSite(domain, source){
@@ -2318,6 +2354,50 @@ def force_reissue_certificate(domain: str) -> dict[str, object]:
     return {"code": 0, "output": "\n".join(output_lines)}
 
 
+def create_backup() -> dict[str, object]:
+    """创建配置备份"""
+    result = run_cmd([MANAGER_BIN, "backup"], timeout=60)
+    if result["code"] == 0:
+        return {"code": 0, "output": result["output"]}
+    else:
+        return {"code": 1, "output": f"备份失败：\n{result['output']}"}
+
+
+def list_backups() -> dict[str, object]:
+    """列出所有备份"""
+    result = run_cmd([MANAGER_BIN, "list-backups"], timeout=10)
+    if result["code"] == 0:
+        return {"code": 0, "output": result["output"]}
+    else:
+        return {"code": 1, "output": f"获取备份列表失败：\n{result['output']}"}
+
+
+def restore_backup(backup_file: str) -> dict[str, object]:
+    """恢复备份"""
+    backup_file = backup_file.strip()
+    if not backup_file:
+        return {"code": 1, "output": "备份文件路径不能为空"}
+
+    result = run_cmd([MANAGER_BIN, "restore", backup_file], timeout=120)
+    if result["code"] == 0:
+        return {"code": 0, "output": result["output"]}
+    else:
+        return {"code": 1, "output": f"恢复失败：\n{result['output']}"}
+
+
+def health_check(domain: str = "") -> dict[str, object]:
+    """健康检查"""
+    args = [MANAGER_BIN, "health-check"]
+    if domain:
+        domain = domain.strip().lower()
+        if not DOMAIN_RE.match(domain):
+            return {"code": 1, "output": "域名无效"}
+        args.append(domain)
+
+    result = run_cmd(args, timeout=60)
+    return {"code": result["code"], "output": result["output"]}
+
+
 def parse_friendly_error(output: str) -> str:
     """将技术错误信息转换为用户友好的提示"""
     output_lower = output.lower()
@@ -3195,6 +3275,31 @@ class Handler(BaseHTTPRequestHandler):
             # 强制重新申请证书：先彻底删除，再重新申请
             result = force_reissue_certificate(domain)
             self.send_json({"message": "证书已重新申请", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/backup/create":
+            result = create_backup()
+            self.send_json({"message": "备份已创建", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/backup/list":
+            result = list_backups()
+            self.send_json({"message": "备份列表", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/backup/restore":
+            backup_file = str(data.get("backup_file", "")).strip()
+            if not backup_file:
+                self.send_json({"error": "缺少backup_file参数"}, 400)
+                return
+            result = restore_backup(backup_file)
+            self.send_json({"message": "备份已恢复", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/health/check":
+            check_domain = str(data.get("domain", "")).strip()
+            result = health_check(check_domain)
+            self.send_json({"message": "健康检查完成", **result}, 200 if result["code"] == 0 else 500)
             return
 
         if path == "/api/certs/set-auto-renew":

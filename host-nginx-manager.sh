@@ -7,6 +7,7 @@ APP_LABEL="VPS Nginx 代理管理器"
 MANAGER_ROOT="/etc/nginx/vps-proxy-manager"
 SITE_STATE_DIR="$MANAGER_ROOT/sites"
 ACME_ROOT="$MANAGER_ROOT/acme"
+BACKUP_DIR="$MANAGER_ROOT/backups"
 SITE_PREFIX="vpspm"
 
 RED='\033[0;31m'
@@ -55,6 +56,10 @@ $APP_LABEL v$SCRIPT_VERSION
   host-nginx-manager.sh set-auto-renew DOMAIN [0|1]
   host-nginx-manager.sh remove DOMAIN [--yes] [--delete-cert]
   host-nginx-manager.sh diagnose DOMAIN
+  host-nginx-manager.sh health-check [DOMAIN]
+  host-nginx-manager.sh backup [--output FILE]
+  host-nginx-manager.sh restore BACKUP_FILE
+  host-nginx-manager.sh list-backups
   host-nginx-manager.sh list
   host-nginx-manager.sh show DOMAIN
   host-nginx-manager.sh test
@@ -135,6 +140,72 @@ validate_domain() {
 
 validate_upstream() {
     [[ "$1" =~ ^[^:]+:[0-9]+$ ]]
+}
+
+check_backend_health() {
+    local upstream="$1"
+    local scheme="${2:-http}"
+    local host="${upstream%:*}"
+    local port="${upstream##*:}"
+
+    info "正在检查后端连通性..."
+
+    # 1. 检查端口是否监听
+    if ! timeout 3 bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null; then
+        warn "后端连接失败"
+        echo ""
+        echo "━━━ 诊断信息 ━━━"
+        echo "后端地址：$scheme://$upstream"
+        echo "状态：端口无响应"
+        echo ""
+        echo "━━━ 可能原因 ━━━"
+        echo "1. 后端服务未启动"
+        echo "2. 端口号配置错误"
+        echo "3. 防火墙阻止连接"
+        echo "4. 服务启动中（尚未监听端口）"
+        echo ""
+        echo "━━━ 排查命令 ━━━"
+        echo "检查端口监听：sudo ss -tlnp | grep :$port"
+        echo "检查进程状态：sudo systemctl status <服务名>"
+        echo "查看服务日志：sudo journalctl -u <服务名> -n 50"
+        echo "手动测试：curl -v $scheme://$upstream/"
+        echo ""
+        read -p "是否继续配置？(yes/no): " continue_config
+        if [[ "$continue_config" != "yes" ]]; then
+            return 1
+        fi
+        return 0
+    fi
+
+    # 2. 尝试 HTTP 请求
+    local http_code=$(curl -o /dev/null -s -w "%{http_code}" --max-time 5 "$scheme://$upstream/" 2>/dev/null || echo "000")
+
+    if [[ "$http_code" == "000" ]]; then
+        warn "后端 HTTP 请求失败"
+        echo ""
+        echo "━━━ 诊断信息 ━━━"
+        echo "后端地址：$scheme://$upstream"
+        echo "TCP 连接：✓ 成功"
+        echo "HTTP 请求：✗ 失败"
+        echo ""
+        echo "━━━ 可能原因 ━━━"
+        echo "1. 服务未正确处理 HTTP 请求"
+        echo "2. 服务启动中（端口监听但未就绪）"
+        echo "3. SSL/TLS 配置错误（如使用了 https://）"
+        echo "4. 需要特定的请求头或路径"
+        echo ""
+        read -p "是否继续配置？(yes/no): " continue_config
+        if [[ "$continue_config" != "yes" ]]; then
+            return 1
+        fi
+    elif [[ "$http_code" =~ ^[45] ]]; then
+        warn "后端返回错误状态码：$http_code"
+        info "这可能是正常的（取决于你的应用）"
+    else
+        log "后端健康检查通过（HTTP $http_code）"
+    fi
+
+    return 0
 }
 
 ensure_manager_dirs() {
@@ -367,14 +438,100 @@ issue_cert() {
         warn "使用 --force-renewal 强制重新申请证书"
     fi
 
-    certbot certonly \
+    # DNS 预检查
+    info "正在检查 DNS 解析..."
+    local server_ip=$(curl -s ifconfig.me 2>/dev/null || curl -s icanhazip.com 2>/dev/null || echo "未知")
+    local dns_result=$(dig +short "$DOMAIN" @8.8.8.8 2>/dev/null | tail -1)
+
+    if [[ -z "$dns_result" ]]; then
+        error "DNS 解析失败"
+        echo ""
+        echo "━━━ 诊断信息 ━━━"
+        echo "域名：$DOMAIN"
+        echo "DNS 查询：无解析结果"
+        echo ""
+        echo "━━━ 可能原因 ━━━"
+        echo "1. 域名 DNS 记录未配置"
+        echo "2. DNS 记录刚添加，尚未生效（需等待 10-30 分钟）"
+        echo "3. 域名服务商 DNS 服务器故障"
+        echo ""
+        echo "━━━ 解决方案 ━━━"
+        echo "1. 检查域名服务商控制台的 DNS 记录"
+        echo "2. 确认 A 记录指向：$server_ip"
+        echo "3. 使用在线工具检查 DNS 传播：https://dnschecker.org"
+        echo "4. 等待 DNS 生效后重试：host-nginx-manager enable-ssl $DOMAIN"
+        echo ""
+        return 1
+    elif [[ "$dns_result" != "$server_ip" ]]; then
+        warn "DNS 解析不匹配"
+        echo ""
+        echo "━━━ 诊断信息 ━━━"
+        echo "域名：$DOMAIN"
+        echo "期望 IP：$server_ip（本服务器）"
+        echo "实际 IP：$dns_result"
+        echo ""
+        echo "━━━ 可能原因 ━━━"
+        echo "1. DNS 记录指向了错误的服务器"
+        echo "2. DNS 记录正在传播中（新旧值混合）"
+        echo "3. 使用了 CDN 或负载均衡（可能正常）"
+        echo ""
+        echo "━━━ 解决方案 ━━━"
+        echo "1. 如果使用 CDN，请忽略此警告"
+        echo "2. 否则，请修改 DNS A 记录指向：$server_ip"
+        echo "3. 等待 DNS 生效后重试"
+        echo ""
+        read -p "是否继续申请证书？(yes/no): " continue_cert
+        if [[ "$continue_cert" != "yes" ]]; then
+            info "已取消"
+            return 1
+        fi
+    else
+        log "DNS 解析正确：$DOMAIN → $dns_result"
+    fi
+
+    # 执行证书申请
+    info "正在申请证书..."
+    if ! certbot certonly \
         --webroot \
         -w "$ACME_ROOT" \
         -d "$DOMAIN" \
         --non-interactive \
         --agree-tos \
         "${email_args[@]}" \
-        "${extra_args[@]}"
+        "${extra_args[@]}" 2>&1 | tee /tmp/certbot-error.log; then
+
+        error "证书申请失败"
+        echo ""
+        echo "━━━ 错误详情 ━━━"
+        grep -E "(Error|Failed|Unable|Invalid)" /tmp/certbot-error.log | head -5 || echo "查看完整日志：/tmp/certbot-error.log"
+        echo ""
+        echo "━━━ 常见原因与解决方案 ━━━"
+        echo "1. 端口 80 未开放"
+        echo "   解决：sudo ufw allow 80 或在云服务商安全组开放"
+        echo ""
+        echo "2. ACME 验证目录无权限"
+        echo "   解决：sudo chmod 755 $ACME_ROOT"
+        echo ""
+        echo "3. 域名已有证书正在生效"
+        echo "   解决：使用 --force-renewal 强制续期"
+        echo ""
+        echo "4. Let's Encrypt 速率限制"
+        echo "   解决：每个域名每周最多 5 次失败，等待或更换域名"
+        echo ""
+        echo "5. DNS CAA 记录阻止"
+        echo "   解决：检查 DNS CAA 记录是否允许 letsencrypt.org"
+        echo ""
+        echo "━━━ 排查命令 ━━━"
+        echo "诊断站点：sudo host-nginx-manager diagnose $DOMAIN"
+        echo "测试 HTTP：curl -I http://$DOMAIN/.well-known/acme-challenge/test"
+        echo "查看日志：sudo tail -50 /var/log/letsencrypt/letsencrypt.log"
+        echo ""
+        rm -f /tmp/certbot-error.log
+        return 1
+    fi
+
+    log "证书申请成功"
+    return 0
 }
 
 parse_add_options() {
@@ -439,6 +596,9 @@ cmd_add() {
     validate_domain "$DOMAIN" || die "无效域名：$DOMAIN"
     validate_upstream "$UPSTREAM" || die "UPSTREAM 必须是 HOST:PORT 格式，例如 127.0.0.1:3001"
 
+    # 后端健康检查
+    check_backend_health "$UPSTREAM" "$UPSTREAM_SCHEME" || die "后端检查失败，已取消"
+
     ensure_manager_dirs
     warn_if_domain_exists_elsewhere
 
@@ -479,6 +639,9 @@ cmd_update() {
     validate_upstream "$new_upstream" || die "UPSTREAM 必须是 HOST:PORT 格式，例如 127.0.0.1:3001"
     load_state "$DOMAIN"
     [[ "${IMPORTED:-0}" != "1" ]] || die "该站点是从已有 nginx 配置导入的记录，尚未迁移为工具配置，不能直接编辑"
+
+    # 后端健康检查
+    check_backend_health "$new_upstream" "$UPSTREAM_SCHEME" || die "后端检查失败，已取消"
 
     UPSTREAM="$new_upstream"
     parse_add_options "$@"
@@ -925,6 +1088,279 @@ cmd_diagnose() {
     log "诊断完成"
 }
 
+cmd_backup() {
+    local output_file=""
+
+    # 解析参数
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --output)
+                output_file="${2:-}"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # 默认备份文件名
+    if [[ -z "$output_file" ]]; then
+        mkdir -p "$BACKUP_DIR"
+        output_file="$BACKUP_DIR/backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+    fi
+
+    section "创建配置备份"
+
+    # 检查要备份的目录
+    local items_to_backup=()
+
+    if [[ -d "$SITE_STATE_DIR" ]]; then
+        items_to_backup+=("$SITE_STATE_DIR")
+        log "✓ 状态文件"
+    fi
+
+    if [[ -d "/etc/nginx/sites-available" ]]; then
+        items_to_backup+=("/etc/nginx/sites-available")
+        log "✓ Nginx 配置"
+    fi
+
+    if [[ -d "/etc/letsencrypt" ]]; then
+        items_to_backup+=("/etc/letsencrypt")
+        log "✓ SSL 证书"
+    fi
+
+    if [[ ${#items_to_backup[@]} -eq 0 ]]; then
+        die "没有可备份的内容"
+    fi
+
+    # 创建备份
+    info "正在打包..."
+    tar czf "$output_file" "${items_to_backup[@]}" 2>/dev/null || die "备份失败"
+
+    local size=$(du -h "$output_file" | cut -f1)
+    log "备份完成"
+    log "文件：$output_file"
+    log "大小：$size"
+}
+
+cmd_restore() {
+    local backup_file="${1:-}"
+    [[ -n "$backup_file" ]] || die "用法：restore BACKUP_FILE"
+    [[ -f "$backup_file" ]] || die "备份文件不存在：$backup_file"
+
+    section "恢复配置备份"
+
+    warn "⚠️  警告：此操作将覆盖当前配置"
+    warn "建议先创建当前配置的备份"
+
+    read -p "确认恢复？(yes/no): " confirm
+    if [[ "$confirm" != "yes" ]]; then
+        info "已取消"
+        return 0
+    fi
+
+    # 创建当前配置的备份
+    local auto_backup="$BACKUP_DIR/auto-backup-before-restore-$(date +%Y%m%d-%H%M%S).tar.gz"
+    mkdir -p "$BACKUP_DIR"
+    info "正在备份当前配置..."
+    tar czf "$auto_backup" "$SITE_STATE_DIR" /etc/nginx/sites-available /etc/letsencrypt 2>/dev/null || true
+    log "当前配置已备份到：$auto_backup"
+
+    # 恢复备份
+    info "正在恢复备份..."
+    tar xzf "$backup_file" -C / 2>/dev/null || die "恢复失败"
+
+    # 重载 nginx
+    info "正在重载 nginx..."
+    if nginx -t 2>&1 | grep -q "test is successful"; then
+        systemctl reload nginx || nginx -s reload
+        log "恢复完成"
+    else
+        error "nginx 配置测试失败"
+        warn "正在回滚..."
+        tar xzf "$auto_backup" -C / 2>/dev/null
+        systemctl reload nginx || nginx -s reload
+        die "恢复失败，已回滚到之前的配置"
+    fi
+}
+
+cmd_list_backups() {
+    section "配置备份列表"
+
+    if [[ ! -d "$BACKUP_DIR" ]] || [[ -z "$(ls -A "$BACKUP_DIR" 2>/dev/null)" ]]; then
+        info "暂无备份"
+        return 0
+    fi
+
+    local backups=($(ls -t "$BACKUP_DIR"/*.tar.gz 2>/dev/null))
+
+    printf "%-30s %10s %20s\n" "文件名" "大小" "创建时间"
+    printf "%-30s %10s %20s\n" "----" "----" "----"
+
+    for backup in "${backups[@]}"; do
+        local name=$(basename "$backup")
+        local size=$(du -h "$backup" | cut -f1)
+        local time=$(stat -c %y "$backup" 2>/dev/null | cut -d. -f1 || stat -f "%Sm" -t "%Y-%m-%d %H:%M:%S" "$backup")
+        printf "%-30s %10s %20s\n" "$name" "$size" "$time"
+    done
+
+    echo ""
+    info "备份目录：$BACKUP_DIR"
+    info "总数：${#backups[@]}"
+}
+
+cmd_health_check() {
+    local target_domain="${1:-}"
+
+    section "健康检查"
+
+    # 如果指定了域名，只检查单个站点
+    if [[ -n "$target_domain" ]]; then
+        target_domain="$(normalize_domain "$target_domain")"
+        validate_domain "$target_domain" || die "无效域名：$target_domain"
+
+        local state_file="$(state_file "$target_domain")"
+        [[ -f "$state_file" ]] || die "站点不存在：$target_domain"
+
+        check_single_site "$target_domain"
+        return 0
+    fi
+
+    # 检查所有站点
+    local state_files=("$SITE_STATE_DIR"/*.env)
+    if [[ ! -e "${state_files[0]}" ]]; then
+        info "暂无受管站点"
+        return 0
+    fi
+
+    local total=0
+    local healthy=0
+    local warnings=0
+    local errors=0
+
+    for state_file in "${state_files[@]}"; do
+        local domain=$(basename "$state_file" .env)
+        ((total++))
+
+        echo ""
+        echo "━━━ [$total] $domain ━━━"
+
+        local status=$(check_single_site "$domain" 2>&1)
+        echo "$status"
+
+        if echo "$status" | grep -q "✓ 所有检查通过"; then
+            ((healthy++))
+        elif echo "$status" | grep -q "✗"; then
+            ((errors++))
+        else
+            ((warnings++))
+        fi
+    done
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "总计：$total 个站点"
+    echo "健康：$healthy"
+    echo "警告：$warnings"
+    echo "错误：$errors"
+}
+
+check_single_site() {
+    local domain="$1"
+    load_state "$domain"
+
+    local has_error=0
+    local has_warning=0
+
+    # 1. 检查后端连通性
+    local host="${UPSTREAM%:*}"
+    local port="${UPSTREAM##*:}"
+
+    if timeout 2 bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null; then
+        log "✓ 后端连接正常 ($UPSTREAM_SCHEME://$UPSTREAM)"
+
+        # 尝试 HTTP 请求
+        local http_code=$(curl -o /dev/null -s -w "%{http_code}" --max-time 3 "$UPSTREAM_SCHEME://$UPSTREAM/" 2>/dev/null || echo "000")
+        if [[ "$http_code" == "000" ]]; then
+            warn "⚠ 后端 HTTP 请求失败"
+            has_warning=1
+        elif [[ "$http_code" =~ ^[45] ]]; then
+            info "  HTTP 状态码：$http_code"
+        else
+            log "  HTTP 状态码：$http_code"
+        fi
+    else
+        error "✗ 后端连接失败 ($UPSTREAM_SCHEME://$UPSTREAM)"
+        has_error=1
+    fi
+
+    # 2. 检查 DNS 解析
+    local dns_result=$(dig +short "$domain" @8.8.8.8 2>/dev/null | tail -1)
+    if [[ -z "$dns_result" ]]; then
+        error "✗ DNS 解析失败"
+        has_error=1
+    else
+        local server_ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || echo "未知")
+        if [[ "$dns_result" == "$server_ip" ]]; then
+            log "✓ DNS 解析正确 ($domain → $dns_result)"
+        else
+            warn "⚠ DNS 指向不同 IP：$dns_result（本机：$server_ip）"
+            has_warning=1
+        fi
+    fi
+
+    # 3. 检查证书
+    if [[ "$ENABLE_SSL" == "1" ]]; then
+        local cert_file="/etc/letsencrypt/live/$domain/fullchain.pem"
+        if [[ -f "$cert_file" ]]; then
+            if openssl x509 -in "$cert_file" -noout -checkend 0 >/dev/null 2>&1; then
+                local expiry=$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2)
+                local expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
+                local now_epoch=$(date +%s)
+                local days_left=$(( ($expiry_epoch - $now_epoch) / 86400 ))
+
+                if [[ $days_left -le 7 ]]; then
+                    error "✗ 证书即将过期（剩余 $days_left 天）"
+                    has_error=1
+                elif [[ $days_left -le 30 ]]; then
+                    warn "⚠ 证书将在 $days_left 天后过期"
+                    has_warning=1
+                else
+                    log "✓ 证书有效（剩余 $days_left 天）"
+                fi
+            else
+                error "✗ 证书已过期或损坏"
+                has_error=1
+            fi
+        else
+            error "✗ 证书文件不存在"
+            has_error=1
+        fi
+    else
+        info "  未启用 HTTPS"
+    fi
+
+    # 4. 检查 Nginx 配置
+    local conf_file="$(site_conf_available "$domain")"
+    if [[ -f "$conf_file" ]]; then
+        log "✓ Nginx 配置存在"
+    else
+        error "✗ Nginx 配置文件丢失"
+        has_error=1
+    fi
+
+    # 5. 总结
+    if [[ $has_error -eq 1 ]]; then
+        return 1
+    elif [[ $has_warning -eq 1 ]]; then
+        return 2
+    else
+        log "✓ 所有检查通过"
+        return 0
+    fi
+}
+
 main() {
     case "$COMMAND" in
         help|-h|--help)
@@ -987,6 +1423,19 @@ main() {
         diagnose)
             [[ $# -ge 1 ]] || die "用法：diagnose DOMAIN"
             cmd_diagnose "$1"
+            ;;
+        health-check)
+            cmd_health_check "$@"
+            ;;
+        backup)
+            cmd_backup "$@"
+            ;;
+        restore)
+            [[ $# -ge 1 ]] || die "用法：restore BACKUP_FILE"
+            cmd_restore "$1"
+            ;;
+        list-backups)
+            cmd_list_backups
             ;;
 
         *)
