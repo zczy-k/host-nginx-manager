@@ -4229,7 +4229,12 @@ class Handler(BaseHTTPRequestHandler):
                     new_lines.append(f"HNG_WEB_PASSWORD_HASH={new_hash}")
                 env_file.write_text("\n".join(new_lines) + "\n")
 
-                self.send_json({"message": "密码已更新，需要重启服务生效"})
+                # 立即更新内存中的密码变量
+                global PASSWORD_HASH, PASSWORD
+                PASSWORD_HASH = new_hash
+                PASSWORD = ""
+
+                self.send_json({"message": "密码修改成功"})
             else:
                 self.send_json({"error": "配置文件不存在"}, 500)
             return
