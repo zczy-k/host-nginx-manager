@@ -1045,9 +1045,9 @@ async function changePassword(e){
   e.preventDefault();
   const current = $('#currentPassword').value;
   const newPass = $('#newPassword').value;
-  const confirm = $('#confirmPassword').value;
+  const confirmPass = $('#confirmPassword').value;
 
-  if(newPass !== confirm){
+  if(newPass !== confirmPass){
     showMsg('两次输入的新密码不一致','bad');
     return;
   }
