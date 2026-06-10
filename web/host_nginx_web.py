@@ -969,9 +969,10 @@ function showMsg(text, type='info'){
     msgEl.innerHTML = '';
     return;
   }
-  msgEl.innerHTML = `<div class="panel"><span class="tag ${type}">${type}</span> ${escapeHtml(text)}</div>`;
-  // 3秒后自动消失
-  setTimeout(() => { msgEl.innerHTML = ''; }, 3000);
+  msgEl.innerHTML = `<div class="panel" style="font-size:16px;font-weight:bold;padding:15px;margin:10px 0"><span class="tag ${type}">${type}</span> ${escapeHtml(text)}</div>`;
+  msgEl.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  // 5秒后自动消失
+  setTimeout(() => { msgEl.innerHTML = ''; }, 5000);
 }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 async function api(path, opts={}){ const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); if(res.status===401){ window.location.replace('/login'); throw new Error('未登录'); } const data = await res.json(); if(!res.ok) throw new Error(data.error || data.output || '请求失败'); return data; }
@@ -1066,12 +1067,19 @@ async function changePassword(e){
 
   if(!window.confirm('确认修改密码？\n\n修改后需要重新登录')) return;
 
+  const btn = e.target.querySelector('button[type="submit"]');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '修改中...';
+
   try{
     await api('/api/account/change-password', {method:'POST', body:JSON.stringify({currentPassword:current, newPassword:newPass})});
-    showMsg('密码修改成功，请重新登录', 'ok');
+    showMsg('✓ 密码修改成功！2秒后将跳转到登录页面', 'ok');
     setTimeout(() => { window.location.href = '/login'; }, 2000);
   }catch(e){
-    showMsg(e.message,'bad');
+    showMsg('✗ 密码修改失败：' + (e.message || '未知错误'), 'bad');
+    btn.disabled = false;
+    btn.textContent = originalText;
   }
 }
 
