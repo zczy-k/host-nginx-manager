@@ -1210,65 +1210,6 @@ cmd_list_backups() {
     info "总数：${#backups[@]}"
 }
 
-cmd_health_check() {
-    local target_domain="${1:-}"
-
-    section "健康检查"
-
-    # 如果指定了域名，只检查单个站点
-    if [[ -n "$target_domain" ]]; then
-        target_domain="$(normalize_domain "$target_domain")"
-        validate_domain "$target_domain" || die "无效域名：$target_domain"
-
-        local state_file="$(state_file "$target_domain")"
-        [[ -f "$state_file" ]] || die "站点不存在：$target_domain"
-
-        check_single_site "$target_domain"
-        return 0
-    fi
-
-    # 检查所有站点
-    shopt -s nullglob
-    local state_files=("$SITE_STATE_DIR"/*.env)
-    shopt -u nullglob
-
-    if [[ ${#state_files[@]} -eq 0 ]]; then
-        info "暂无受管站点"
-        return 0
-    fi
-
-    local total=0
-    local healthy=0
-    local warnings=0
-    local errors=0
-
-    for state_file in "${state_files[@]}"; do
-        local domain=$(basename "$state_file" .env)
-        ((total++))
-
-        echo ""
-        echo "━━━ [$total] $domain ━━━"
-
-        local status=$(check_single_site "$domain" 2>&1)
-        echo "$status"
-
-        if echo "$status" | grep -q "✓ 所有检查通过"; then
-            ((healthy++))
-        elif echo "$status" | grep -q "✗"; then
-            ((errors++))
-        else
-            ((warnings++))
-        fi
-    done
-
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "总计：$total 个站点"
-    echo "健康：$healthy"
-    echo "警告：$warnings"
-    echo "错误：$errors"
-}
-
 check_single_site() {
     local domain="$1"
     load_state "$domain"
@@ -1362,6 +1303,65 @@ check_single_site() {
         log "✓ 所有检查通过"
         return 0
     fi
+}
+
+cmd_health_check() {
+    local target_domain="${1:-}"
+
+    section "健康检查"
+
+    # 如果指定了域名，只检查单个站点
+    if [[ -n "$target_domain" ]]; then
+        target_domain="$(normalize_domain "$target_domain")"
+        validate_domain "$target_domain" || die "无效域名：$target_domain"
+
+        local state_file="$(state_file "$target_domain")"
+        [[ -f "$state_file" ]] || die "站点不存在：$target_domain"
+
+        check_single_site "$target_domain"
+        return 0
+    fi
+
+    # 检查所有站点
+    shopt -s nullglob
+    local state_files=("$SITE_STATE_DIR"/*.env)
+    shopt -u nullglob
+
+    if [[ ${#state_files[@]} -eq 0 ]]; then
+        info "暂无受管站点"
+        return 0
+    fi
+
+    local total=0
+    local healthy=0
+    local warnings=0
+    local errors=0
+
+    for state_file in "${state_files[@]}"; do
+        local domain=$(basename "$state_file" .env)
+        ((total++))
+
+        echo ""
+        echo "━━━ [$total] $domain ━━━"
+
+        local status=$(check_single_site "$domain" 2>&1)
+        echo "$status"
+
+        if echo "$status" | grep -q "✓ 所有检查通过"; then
+            ((healthy++))
+        elif echo "$status" | grep -q "✗"; then
+            ((errors++))
+        else
+            ((warnings++))
+        fi
+    done
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "总计：$total 个站点"
+    echo "健康：$healthy"
+    echo "警告：$warnings"
+    echo "错误：$errors"
 }
 
 main() {
