@@ -1764,7 +1764,8 @@ $('#reloadBtn').onclick = ()=>action('/api/nginx/reload',{}).catch(e=>showMsg(e.
 $('#problemJumpBtn').onclick = ()=>focusProblemSites();
 
 // 更新主题按钮文本
-if($('#themeBtn')) $('#themeBtn').textContent = savedTheme === 'dark' ? '☀️ 亮色' : '🌙 暗色';
+const theme = localStorage.getItem('theme') || 'light';
+if($('#themeBtn')) $('#themeBtn').textContent = theme === 'dark' ? '☀️ 亮色' : '🌙 暗色';
 
 $('#siteSearch').addEventListener('input', e => { siteQuery = e.target.value; render(); });
 $('#siteFilter').addEventListener('change', e => { siteFilter = e.target.value; render(); });
