@@ -16,6 +16,26 @@ Host Nginx Manager 是给”已有宿主 nginx，且不再使用 Nginx Proxy Man
 - ✅ **Certbot**：Let's Encrypt 证书工具
 - ✅ **Root 权限**：需要 sudo 或 root 用户权限
 
+### 服务器配置要求
+
+本项目设计用于**低资源消耗**场景，最低配置：
+
+- **CPU**：1 核（双核更佳）
+- **内存**：512 MB（1 GB 推荐）
+- **磁盘**：1 GB 可用空间
+- **网络**：公网 IP（用于 Let's Encrypt 证书验证）
+
+**典型适用服务器**：
+- ✅ VPS / 云服务器（阿里云、腾讯云、AWS、Vultr 等）
+- ✅ 低配虚拟机（1C1G、2C2G）
+- ✅ 个人开发服务器
+- ✅ 从 Nginx Proxy Manager 迁移的场景
+
+**资源占用**：
+- Web 管理面板：~30-50 MB 内存
+- Nginx：~10-20 MB 内存（取决于站点数量）
+- 总计：~50-100 MB 内存（远低于 Docker + NPM 方案）
+
 ### 快速检查命令
 
 运行以下命令检查是否满足条件：
