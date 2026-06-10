@@ -869,7 +869,14 @@ curl http://127.0.0.1:端口号</pre>
             <li>✅ 设置复杂的管理密码</li>
             <li>✅ 定期查看证书到期时间</li>
             <li>✅ 保留多个备份版本</li>
+            <li>✅ 启用双因素认证（2FA）增强安全</li>
           </ul>
+
+          <h3>忘记密码？</h3>
+          <p>通过 SSH 登录服务器后，使用以下命令重置密码：</p>
+          <pre style="background:var(--panel);border:1px solid var(--line);padding:10px;border-radius:4px;overflow-x:auto"><code>python3 /opt/host-nginx-manager/web/host_nginx_web.py reset-password</code></pre>
+          <p>按提示输入新密码后，重启服务生效：</p>
+          <pre style="background:var(--panel);border:1px solid var(--line);padding:10px;border-radius:4px;overflow-x:auto"><code>systemctl restart host-nginx-manager-web</code></pre>
         </details>
       </div>
     </section>
@@ -4548,6 +4555,80 @@ def main() -> None:
         print(f'export HNG_WEB_PASSWORD_HASH="{hash_str}"')
         sys.exit(0)
 
+    # 支持重置密码
+    if len(sys.argv) > 1 and sys.argv[1] == "reset-password":
+        print("=== 重置 Web 管理密码 ===\n")
+
+        # 读取新密码
+        import getpass
+        while True:
+            new_password = getpass.getpass("输入新密码: ").strip()
+            if not new_password:
+                print("❌ 密码不能为空")
+                continue
+
+            # 验证密码强度
+            valid, error_msg = validate_password_strength(new_password)
+            if not valid:
+                print(f"❌ {error_msg}")
+                print("\n密码要求：")
+                print("  • 最少12位")
+                print("  • 包含大写字母、小写字母、数字、特殊字符")
+                print("  • 不能有连续数字（如123）或连续字母（如abc）\n")
+                continue
+
+            confirm = getpass.getpass("确认新密码: ").strip()
+            if new_password != confirm:
+                print("❌ 两次输入的密码不一致\n")
+                continue
+            break
+
+        # 生成 hash
+        new_hash = hash_password(new_password)
+
+        # 更新配置文件
+        env_file = pathlib.Path("/etc/host-nginx-manager/web.env")
+        if not env_file.exists():
+            print(f"❌ 配置文件不存在: {env_file}")
+            sys.exit(1)
+
+        try:
+            lines = env_file.read_text().splitlines()
+            new_lines = []
+            updated = False
+            for line in lines:
+                if line.startswith("HNG_WEB_PASSWORD_HASH="):
+                    new_lines.append(f"HNG_WEB_PASSWORD_HASH={new_hash}")
+                    updated = True
+                elif line.startswith("HNG_WEB_PASSWORD="):
+                    continue  # 删除明文密码
+                else:
+                    new_lines.append(line)
+
+            if not updated:
+                new_lines.append(f"HNG_WEB_PASSWORD_HASH={new_hash}")
+
+            # 备份
+            import shutil
+            import datetime
+            backup_file = env_file.parent / f"web.env.bak.{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+            shutil.copy2(env_file, backup_file)
+
+            # 写入
+            env_file.write_text("\n".join(new_lines) + "\n")
+
+            print("\n✅ 密码重置成功！")
+            print(f"   配置文件: {env_file}")
+            print(f"   备份文件: {backup_file}")
+            print("\n重启服务生效：")
+            print("   systemctl restart host-nginx-manager-web")
+
+        except Exception as e:
+            print(f"❌ 重置失败: {e}")
+            sys.exit(1)
+
+        sys.exit(0)
+
     # 检查密码配置
     if not PASSWORD_HASH and not PASSWORD:
         print("错误：未设置密码！")
@@ -4555,6 +4636,8 @@ def main() -> None:
         print("  python3 web/host_nginx_web.py hash-password")
         print("方式2：使用明文密码（不推荐）")
         print("  export HNG_WEB_PASSWORD='your_password'")
+        print("\n忘记密码？使用重置命令：")
+        print("  python3 /opt/host-nginx-manager/web/host_nginx_web.py reset-password")
         sys.exit(1)
 
     if PASSWORD and not PASSWORD_HASH:
