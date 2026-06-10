@@ -2006,6 +2006,20 @@ document.addEventListener('DOMContentLoaded', () => {
       `;
     });
   }
+
+  const confirmPasswordInput = $('#confirmPassword');
+  if(confirmPasswordInput){
+    confirmPasswordInput.addEventListener('input', () => {
+      const newPass = $('#newPassword').value;
+      const confirmPass = confirmPasswordInput.value;
+      if(!confirmPass) return;
+      if(newPass !== confirmPass){
+        confirmPasswordInput.style.borderColor = 'var(--red)';
+      }else{
+        confirmPasswordInput.style.borderColor = 'var(--green)';
+      }
+    });
+  }
 });
 
 // 修改密码表单提交
