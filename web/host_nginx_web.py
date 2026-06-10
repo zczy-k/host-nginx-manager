@@ -3196,6 +3196,32 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"message": "完成", **result}, 200 if result["code"] == 0 else 500)
             return
 
+        # 不依赖 domain 的路由
+        if path == "/api/backup/create":
+            result = create_backup()
+            self.send_json({"message": "备份已创建", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/backup/list":
+            result = list_backups()
+            self.send_json({"message": "备份列表", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/backup/restore":
+            backup_file = str(data.get("backup_file", "")).strip()
+            if not backup_file:
+                self.send_json({"error": "缺少backup_file参数"}, 400)
+                return
+            result = restore_backup(backup_file)
+            self.send_json({"message": "备份已恢复", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/health/check":
+            check_domain = str(data.get("domain", "")).strip()
+            result = health_check(check_domain)
+            self.send_json({"message": "健康检查完成", **result}, 200 if result["code"] == 0 else 500)
+            return
+
         domain = str(data.get("domain", "")).strip()
         if path == "/api/sites/take-over":
             result = take_over_site(domain, str(data.get("source", "")).strip())
@@ -3275,31 +3301,6 @@ class Handler(BaseHTTPRequestHandler):
             # 强制重新申请证书：先彻底删除，再重新申请
             result = force_reissue_certificate(domain)
             self.send_json({"message": "证书已重新申请", **result}, 200 if result["code"] == 0 else 500)
-            return
-
-        if path == "/api/backup/create":
-            result = create_backup()
-            self.send_json({"message": "备份已创建", **result}, 200 if result["code"] == 0 else 500)
-            return
-
-        if path == "/api/backup/list":
-            result = list_backups()
-            self.send_json({"message": "备份列表", **result}, 200 if result["code"] == 0 else 500)
-            return
-
-        if path == "/api/backup/restore":
-            backup_file = str(data.get("backup_file", "")).strip()
-            if not backup_file:
-                self.send_json({"error": "缺少backup_file参数"}, 400)
-                return
-            result = restore_backup(backup_file)
-            self.send_json({"message": "备份已恢复", **result}, 200 if result["code"] == 0 else 500)
-            return
-
-        if path == "/api/health/check":
-            check_domain = str(data.get("domain", "")).strip()
-            result = health_check(check_domain)
-            self.send_json({"message": "健康检查完成", **result}, 200 if result["code"] == 0 else 500)
             return
 
         if path == "/api/certs/set-auto-renew":
