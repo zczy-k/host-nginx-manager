@@ -111,6 +111,39 @@ def verify_password(password: str, hash_str: str) -> bool:
     except Exception:
         return False
 
+def validate_password_strength(password: str) -> tuple[bool, str]:
+    """验证密码强度
+    返回: (是否通过, 错误信息)
+    """
+    import re
+
+    if len(password) < 12:
+        return False, "密码长度至少12位"
+
+    if not re.search(r'[A-Z]', password):
+        return False, "密码必须包含大写字母"
+
+    if not re.search(r'[a-z]', password):
+        return False, "密码必须包含小写字母"
+
+    if not re.search(r'[0-9]', password):
+        return False, "密码必须包含数字"
+
+    if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
+        return False, "密码必须包含特殊字符"
+
+    # 检查连续数字
+    sequential_nums = ['012','123','234','345','456','567','678','789','890','987','876','765','654','543','432','321','210']
+    if any(seq in password for seq in sequential_nums):
+        return False, "密码不能包含连续数字"
+
+    # 检查连续字母
+    sequential_letters = ['abc','bcd','cde','def','efg','fgh','ghi','hij','ijk','jkl','klm','lmn','mno','nop','opq','pqr','qrs','rst','stu','tuv','uvw','vwx','wxy','xyz','zyx','yxw','xwv','wvu','vut','uts','tsr','srq','rqp','qpo','pon','onm','nml','mlk','lkj','kji','jih','ihg','hgf','gfe','fed','edc','dcb','cba']
+    if any(seq in password.lower() for seq in sequential_letters):
+        return False, "密码不能包含连续字母"
+
+    return True, ""
+
 def check_login_attempts(ip: str) -> bool:
     """检查登录限流"""
     now = time.time()
@@ -581,7 +614,7 @@ APP_HTML = r'''<!doctype html>
             </label>
             <label>新密码
               <div style="position:relative">
-                <input id="newPassword" type="password" required autocomplete="new-password" minlength="8" style="padding-right:40px">
+                <input id="newPassword" type="password" required autocomplete="new-password" minlength="12" style="padding-right:40px">
                 <button type="button" onclick="togglePassword('newPassword')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);border:none;background:none;cursor:pointer;padding:4px;color:var(--muted)">👁️</button>
               </div>
             </label>
@@ -594,11 +627,13 @@ APP_HTML = r'''<!doctype html>
             <div class="notice" style="margin:10px 0;font-size:13px">
               <strong>密码要求：</strong>
               <ul style="margin:5px 0 0 20px">
-                <li>最少 8 位字符</li>
+                <li>最少 12 位字符</li>
                 <li>必须包含大写字母 (A-Z)</li>
                 <li>必须包含小写字母 (a-z)</li>
                 <li>必须包含数字 (0-9)</li>
                 <li>必须包含特殊字符 (!@#$%^&*)</li>
+                <li>不能包含连续数字（如 123、456）</li>
+                <li>不能包含连续字母（如 abc、xyz）</li>
               </ul>
             </div>
             <div id="passwordStrength" style="margin:10px 0"></div>
@@ -991,17 +1026,25 @@ function togglePassword(inputId){
 }
 
 function checkPasswordStrength(password){
+  // 检查连续数字（如 123, 234, 012）
+  const hasSequentialNumbers = /(?:012|123|234|345|456|567|678|789|890|987|876|765|654|543|432|321|210)/i.test(password);
+
+  // 检查连续字母（如 abc, xyz, cba）
+  const hasSequentialLetters = /(?:abc|bcd|cde|def|efg|fgh|ghi|hij|ijk|jkl|klm|lmn|mno|nop|opq|pqr|qrs|rst|stu|tuv|uvw|vwx|wxy|xyz|zyx|yxw|xwv|wvu|vut|uts|tsr|srq|rqp|qpo|pon|onm|nml|mlk|lkj|kji|jih|ihg|hgf|gfe|fed|edc|dcb|cba)/i.test(password);
+
   const checks = {
-    length: password.length >= 8,
+    length: password.length >= 12,
     upper: /[A-Z]/.test(password),
     lower: /[a-z]/.test(password),
     number: /[0-9]/.test(password),
-    special: /[!@#$%^&*(),.?":{}|<>]/.test(password)
+    special: /[!@#$%^&*(),.?":{}|<>]/.test(password),
+    noSequentialNum: !hasSequentialNumbers,
+    noSequentialLetter: !hasSequentialLetters
   };
   const score = Object.values(checks).filter(Boolean).length;
   let strength = '', color = '';
-  if(score < 3) { strength = '弱'; color = 'var(--red)'; }
-  else if(score < 5) { strength = '中'; color = 'var(--amber)'; }
+  if(score < 4) { strength = '弱'; color = 'var(--red)'; }
+  else if(score < 7) { strength = '中'; color = 'var(--amber)'; }
   else { strength = '强'; color = 'var(--green)'; }
   return {checks, score, strength, color};
 }
@@ -1059,13 +1102,15 @@ async function changePassword(e){
   }
 
   const {checks,score} = checkPasswordStrength(newPass);
-  if(score < 5){
+  if(score < 7){
     const missing = [];
-    if(!checks.length) missing.push('至少8位');
+    if(!checks.length) missing.push('至少12位');
     if(!checks.upper) missing.push('大写字母');
     if(!checks.lower) missing.push('小写字母');
     if(!checks.number) missing.push('数字');
     if(!checks.special) missing.push('特殊字符');
+    if(!checks.noSequentialNum) missing.push('不能有连续数字');
+    if(!checks.noSequentialLetter) missing.push('不能有连续字母');
     showMsg(`密码不符合要求，缺少：${missing.join('、')}`, 'bad');
     return;
   }
@@ -4217,6 +4262,12 @@ class Handler(BaseHTTPRequestHandler):
             # 检查新密码是否与当前密码相同
             if current == new_password:
                 self.send_json({"error": "新密码与当前密码相同"}, 400)
+                return
+
+            # 验证新密码强度
+            valid_strength, error_msg = validate_password_strength(new_password)
+            if not valid_strength:
+                self.send_json({"error": error_msg}, 400)
                 return
 
             # 生成新密码 hash
