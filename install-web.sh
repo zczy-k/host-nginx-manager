@@ -90,8 +90,9 @@ show_menu() {
         echo ""
         echo "请选择操作："
         echo "  1) 升级到最新版本（保留配置和密码）"
-        echo "  2) 全新安装（重置所有配置）"
-        echo "  3) 退出"
+        echo "  2) 重置登录密码"
+        echo "  3) 全新安装（重置所有配置）"
+        echo "  4) 退出"
         echo ""
     else
         section "未检测到已安装的版本"
@@ -206,6 +207,36 @@ EOF
     info "  如需配置续期后自动重载nginx，运行："
     info "  curl -fsSL $RAW_BASE/setup-auto-renew.sh | sudo bash"
     echo ""
+}
+
+do_reset_password() {
+    section "重置登录密码"
+
+    if [[ ! -f "$WEB_DIR/host_nginx_web.py" ]]; then
+        die "未找到 Web 程序文件，请先安装"
+    fi
+
+    info "使用交互式密码重置工具..."
+    echo ""
+
+    python3 "$WEB_DIR/host_nginx_web.py" reset-password
+    local exit_code=$?
+
+    if [[ $exit_code -eq 0 ]]; then
+        echo ""
+        section "密码重置完成！"
+        info "重启服务以应用新密码..."
+        systemctl restart host-nginx-manager-web.service
+        sleep 2
+        if systemctl is-active host-nginx-manager-web.service >/dev/null 2>&1; then
+            log "服务已重启，可使用新密码登录"
+        else
+            warn "服务重启失败，请检查日志"
+            systemctl status host-nginx-manager-web.service --no-pager -l
+        fi
+    else
+        warn "密码重置已取消或失败"
+    fi
 }
 
 clean_before_install() {
@@ -385,9 +416,9 @@ main() {
     # 交互模式：从 tty 读取用户选择
     while true; do
         show_menu
-        printf "请输入选项 [1-3]: "
+        printf "请输入选项 [1-4]: "
         local choice=""
-        read -r choice <"$TTY_IN" || choice="3"
+        read -r choice <"$TTY_IN" || choice="4"
 
         case "$choice" in
             1)
@@ -403,6 +434,18 @@ main() {
                 exit 0
                 ;;
             2)
+                if detect_mode; then
+                    do_reset_password
+                    echo ""
+                    printf "按回车键退出..."
+                    read -r _ <"$TTY_IN" || true
+                    exit 0
+                else
+                    echo "退出安装程序"
+                    exit 0
+                fi
+                ;;
+            3)
                 if detect_mode; then
                     echo ""
                     warn "⚠️  警告：全新安装会清理以下内容"
@@ -435,7 +478,7 @@ main() {
                     exit 0
                 fi
                 ;;
-            3)
+            4)
                 echo "退出安装程序"
                 exit 0
                 ;;
