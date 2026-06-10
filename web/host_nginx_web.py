@@ -1103,11 +1103,12 @@ async function confirm2FA(secret){
   try{
     const result = await api('/api/account/2fa/confirm', {method:'POST', body:JSON.stringify({secret, code})});
     showMsg(result.message || '双因素认证已启用','ok');
-    document.querySelector('.modal-overlay')?.remove();
-    loadAccountInfo();
+    setTimeout(() => {
+      document.querySelector('.modal-overlay')?.remove();
+      loadAccountInfo();
+    }, 500);
   }catch(e){
     showMsg(e.message || '验证失败','bad');
-  }finally{
     btn.disabled = false;
     btn.textContent = originalText;
   }
