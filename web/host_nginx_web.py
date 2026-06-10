@@ -4065,6 +4065,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/login":
+            global TOTP_SECRET
             client_ip = self.client_address[0]
 
             # 检查限流
