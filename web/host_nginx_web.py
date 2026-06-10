@@ -190,12 +190,11 @@ APP_HTML = r'''<!doctype html>
     <div class="brand">Host Nginx Manager</div>
     <nav class="nav">
       <button data-view="dashboard" class="active">概览</button>
-      <button data-view="issues">问题</button>
       <button data-view="sites">站点</button>
-      <button data-view="services">本机服务</button>
       <button data-view="certs">证书</button>
-      <button data-view="migrate">证书迁移</button>
       <button data-view="create">新增反代</button>
+      <button data-view="issues">问题</button>
+      <button data-view="services">本机服务</button>
       <button data-view="tools">维护</button>
       <button data-view="help">帮助</button>
     </nav>
@@ -208,19 +207,23 @@ APP_HTML = r'''<!doctype html>
     <section id="message"></section>
     <section id="dashboard" class="view active">
       <div class="grid stats">
-        <div class="panel"><div class="stat-label">nginx</div><div id="nginxStatus" class="stat-value">-</div></div>
-        <div class="panel"><div class="stat-label">Nginx 站点</div><div id="siteCount" class="stat-value">-</div></div>
-        <div class="panel"><div class="stat-label">监听地址</div><div id="bindInfo" class="stat-value">-</div></div>
-        <div class="panel"><div class="stat-label">管理脚本</div><div id="managerInfo" class="stat-value">-</div></div>
-        <div class="panel"><div class="stat-label">后端异常</div><div id="backendBadCount" class="stat-value">-</div></div>
+        <div class="panel"><div class="stat-label">站点总数</div><div id="siteCount" class="stat-value">-</div></div>
+        <div class="panel"><div class="stat-label">异常站点</div><div id="backendBadCount" class="stat-value">-</div></div>
         <div class="panel"><div class="stat-label">证书预警</div><div id="certWarnCount" class="stat-value">-</div></div>
-        <div class="panel"><div class="stat-label">DNS 异常</div><div id="dnsBadCount" class="stat-value">-</div></div>
-        <div class="panel"><div class="stat-label">本机服务</div><div id="serviceCount" class="stat-value">-</div></div>
+        <div class="panel"><div class="stat-label">健康度</div><div id="healthPercent" class="stat-value">-</div></div>
       </div>
       <div class="grid dashboard-grid">
-        <div class="panel"><h2>当前建议</h2><div class="notice">普通 Web/API 服务可以统一放到不同子域名的 443；Rathole、stream、ssl_preread 仍建议手工维护。</div></div>
         <div class="panel">
-          <div class="row"><h2>待处理站点</h2><span class="spacer"></span><button class="btn small" id="problemJumpBtn" type="button">只看问题</button></div>
+          <h2>快速操作</h2>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <button class="btn primary" data-jump="create">新增反向代理</button>
+            <button class="btn" data-jump="sites">管理站点</button>
+            <button class="btn" data-jump="certs">证书管理</button>
+            <button class="btn" onclick="runHealthCheck()">全站健康检查</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="row"><h2>待处理问题</h2><span class="spacer"></span><button class="btn small" id="problemJumpBtn" type="button">查看全部</button></div>
           <div id="problemRows" class="list"></div>
         </div>
       </div>
@@ -280,65 +283,6 @@ APP_HTML = r'''<!doctype html>
         <div style="overflow:auto"><table><thead><tr><th>域名</th><th>证书状态</th><th>自动续期</th><th>当前配置</th><th>来源</th><th>操作</th></tr></thead><tbody id="certRows"></tbody></table></div>
       </div>
     </section>
-    <section id="migrate" class="view">
-      <div class="panel">
-        <h2>🔧 证书迁移与修复工具</h2>
-        <p class="muted">检测并修复证书权限问题，确保 nginx 可以正常读取证书文件。</p>
-
-        <div class="notice" style="margin:16px 0;">
-          <strong>功能说明：</strong><br>
-          • 自动检测所有证书的权限问题<br>
-          • 修复证书文件所有者和权限<br>
-          • 设置自动修复脚本（certbot 续期后自动运行）<br>
-          • 不影响 Rathole、stream 等其他配置<br>
-          • 安全可靠，支持回滚
-        </div>
-
-        <div style="margin:24px 0;">
-          <h3>步骤 1：检查证书状态</h3>
-          <button class="btn primary" id="checkCertsBtn" type="button">🔍 检查所有证书</button>
-          <div id="certCheckResult" style="margin-top:12px;"></div>
-        </div>
-
-        <div style="margin:24px 0;">
-          <h3>步骤 2：修复证书权限</h3>
-          <button class="btn primary" id="fixCertsBtn" type="button" disabled>🔧 一键修复权限</button>
-          <button class="btn" id="installHookBtn" type="button" disabled>⚙️ 安装自动修复脚本</button>
-          <div id="certFixResult" style="margin-top:12px;"></div>
-        </div>
-
-        <div style="margin:24px 0;">
-          <h3>步骤 3：验证修复结果</h3>
-          <button class="btn" id="verifyCertsBtn" type="button" disabled>✓ 验证修复</button>
-          <div id="certVerifyResult" style="margin-top:12px;"></div>
-        </div>
-
-        <div style="margin:24px 0;border-top:2px solid var(--line);padding-top:24px;">
-          <h3>步骤 4：统一配置格式</h3>
-          <p class="muted">检测并迁移使用旧配置的站点（如从 Certbot 或 NPM 接管的站点），统一为本项目的标准格式。</p>
-          <button class="btn primary" id="checkLegacyBtn" type="button">🔍 检查旧配置站点</button>
-          <button class="btn primary" id="migrateLegacyBtn" type="button" disabled>🔄 一键统一配置</button>
-          <div id="legacyCheckResult" style="margin-top:12px;"></div>
-        </div>
-
-        <div style="margin:24px 0;border-top:2px solid var(--line);padding-top:24px;">
-          <h3>步骤 5：清理重复配置</h3>
-          <p class="muted">检测并清理备份配置文件（.bak-*），解决证书中心显示重复站点的问题。</p>
-          <button class="btn" id="cleanDuplicatesBtn" type="button">🧹 清理重复配置</button>
-          <div id="cleanDuplicatesResult" style="margin-top:12px;"></div>
-        </div>
-
-        <details style="margin-top:24px;">
-          <summary>高级选项</summary>
-          <div style="padding:16px;background:#f8f9fa;border-radius:8px;margin-top:12px;">
-            <h4>迁移自定义证书</h4>
-            <p class="muted">如果您有从其他工具（如 NPM）创建的证书，可以使用此功能统一管理。</p>
-            <label>证书所有者（当前）<input id="certOwner" value="npmbare" placeholder="npmbare"></label>
-            <button class="btn" id="migrateCustomBtn" type="button">迁移自定义证书</button>
-          </div>
-        </details>
-      </div>
-    </section>
     <section id="create" class="view">
       <div class="panel">
         <h2>新增标准反向代理</h2>
@@ -358,28 +302,97 @@ APP_HTML = r'''<!doctype html>
       </div>
     </section>
     <section id="tools" class="view">
-      <div class="grid">
-        <div class="panel">
-          <h2>nginx 维护</h2>
-          <div class="row">
-            <button class="btn" id="testBtn">测试配置</button>
-            <button class="btn primary" id="reloadBtn">重载 nginx</button>
-          </div>
+      <div style="margin-bottom:20px">
+        <div class="row" style="gap:10px">
+          <button class="btn primary" onclick="switchToolsTab('basic')" id="toolsBasicBtn">基础维护</button>
+          <button class="btn" onclick="switchToolsTab('advanced')" id="toolsAdvancedBtn">高级工具</button>
         </div>
-        <div class="panel">
-          <h2>配置备份</h2>
-          <div class="row">
-            <button class="btn primary" onclick="createBackup()">创建备份</button>
-            <button class="btn" onclick="showBackupListModal()">恢复备份</button>
+      </div>
+
+      <div id="toolsBasic">
+        <div class="grid">
+          <div class="panel">
+            <h2>nginx 维护</h2>
+            <div class="row">
+              <button class="btn" id="testBtn">测试配置</button>
+              <button class="btn primary" id="reloadBtn">重载 nginx</button>
+            </div>
           </div>
-        </div>
-        <div class="panel">
-          <h2>健康检查</h2>
-          <div class="row">
-            <button class="btn primary" onclick="runHealthCheck()">全站检查</button>
+          <div class="panel">
+            <h2>配置备份</h2>
+            <div class="row">
+              <button class="btn primary" onclick="createBackup()">创建备份</button>
+              <button class="btn" onclick="showBackupListModal()">恢复备份</button>
+            </div>
           </div>
+          <div class="panel">
+            <h2>健康检查</h2>
+            <div class="row">
+              <button class="btn primary" onclick="runHealthCheck()">全站检查</button>
+            </div>
+          </div>
+          <div class="panel"><h2>输出</h2><pre id="output">等待操作...</pre></div>
         </div>
-        <div class="panel"><h2>输出</h2><pre id="output">等待操作...</pre></div>
+      </div>
+
+      <div id="toolsAdvanced" style="display:none">
+        <div class="panel">
+          <h2>🔧 证书迁移与修复工具</h2>
+          <p class="muted">检测并修复证书权限问题，确保 nginx 可以正常读取证书文件。</p>
+
+          <div class="notice" style="margin:16px 0;">
+            <strong>功能说明：</strong><br>
+            • 自动检测所有证书的权限问题<br>
+            • 修复证书文件所有者和权限<br>
+            • 设置自动修复脚本（certbot 续期后自动运行）<br>
+            • 不影响 Rathole、stream 等其他配置<br>
+            • 安全可靠，支持回滚
+          </div>
+
+          <div style="margin:24px 0;">
+            <h3>步骤 1：检查证书状态</h3>
+            <button class="btn primary" id="checkCertsBtn" type="button">🔍 检查所有证书</button>
+            <div id="certCheckResult" style="margin-top:12px;"></div>
+          </div>
+
+          <div style="margin:24px 0;">
+            <h3>步骤 2：修复证书权限</h3>
+            <button class="btn primary" id="fixCertsBtn" type="button" disabled>🔧 一键修复权限</button>
+            <button class="btn" id="installHookBtn" type="button" disabled>⚙️ 安装自动修复脚本</button>
+            <div id="certFixResult" style="margin-top:12px;"></div>
+          </div>
+
+          <div style="margin:24px 0;">
+            <h3>步骤 3：验证修复结果</h3>
+            <button class="btn" id="verifyCertsBtn" type="button" disabled>✓ 验证修复</button>
+            <div id="certVerifyResult" style="margin-top:12px;"></div>
+          </div>
+
+          <div style="margin:24px 0;border-top:2px solid var(--line);padding-top:24px;">
+            <h3>步骤 4：统一配置格式</h3>
+            <p class="muted">检测并迁移使用旧配置的站点（如从 Certbot 或 NPM 接管的站点），统一为本项目的标准格式。</p>
+            <button class="btn primary" id="checkLegacyBtn" type="button">🔍 检查旧配置站点</button>
+            <button class="btn primary" id="migrateLegacyBtn" type="button" disabled>🔄 一键统一配置</button>
+            <div id="legacyCheckResult" style="margin-top:12px;"></div>
+          </div>
+
+          <div style="margin:24px 0;border-top:2px solid var(--line);padding-top:24px;">
+            <h3>步骤 5：清理重复配置</h3>
+            <p class="muted">检测并清理备份配置文件（.bak-*），解决证书中心显示重复站点的问题。</p>
+            <button class="btn" id="cleanDuplicatesBtn" type="button">🧹 清理重复配置</button>
+            <div id="cleanDuplicatesResult" style="margin-top:12px;"></div>
+          </div>
+
+          <details style="margin-top:24px;">
+            <summary>高级选项</summary>
+            <div style="padding:16px;background:#f8f9fa;border-radius:8px;margin-top:12px;">
+              <h4>迁移自定义证书</h4>
+              <p class="muted">如果您有从其他工具（如 NPM）创建的证书，可以使用此功能统一管理。</p>
+              <label>证书所有者（当前）<input id="certOwner" value="npmbare" placeholder="npmbare"></label>
+              <button class="btn" id="migrateCustomBtn" type="button">迁移自定义证书</button>
+            </div>
+          </details>
+        </div>
       </div>
     </section>
     <section id="help" class="view">
@@ -585,7 +598,21 @@ let siteFilter = 'all';
 let showAllSites = false;
 let certQuery = '';
 let certFilter = 'all';
-const VIEW_TITLES = {dashboard:'概览',issues:'问题',sites:'站点',services:'本机服务',certs:'证书',migrate:'证书迁移',create:'新增反代',tools:'维护',help:'帮助'};
+const VIEW_TITLES = {dashboard:'概览',issues:'问题',sites:'站点',services:'本机服务',certs:'证书',create:'新增反代',tools:'维护',help:'帮助'};
+
+function switchToolsTab(tab){
+  if(tab === 'basic'){
+    $('#toolsBasic').style.display = 'block';
+    $('#toolsAdvanced').style.display = 'none';
+    $('#toolsBasicBtn').classList.add('primary');
+    $('#toolsAdvancedBtn').classList.remove('primary');
+  } else {
+    $('#toolsBasic').style.display = 'none';
+    $('#toolsAdvanced').style.display = 'block';
+    $('#toolsBasicBtn').classList.remove('primary');
+    $('#toolsAdvancedBtn').classList.add('primary');
+  }
+}
 const CERT_WARN_STATES = new Set(['warn','missing','error','critical']);
 const $ = (s) => document.querySelector(s);
 function showMsg(text, type='info'){
@@ -907,14 +934,18 @@ function renderCertificateRows(){
   $('#certRows').innerHTML = rows || '<tr><td colspan="6" class="muted">没有匹配当前筛选条件的证书站点</td></tr>';
 }
 function render(){
-  $('#nginxStatus').innerHTML = `<span class="tag ${state.nginx_active==='active'?'ok':'bad'}">${escapeHtml(state.nginx_active)}</span>`;
   $('#siteCount').textContent = state.sites.length;
-  $('#bindInfo').textContent = state.bind + ':' + state.port;
-  $('#managerInfo').textContent = state.manager_exists ? '已安装' : '缺失';
-  $('#backendBadCount').textContent = state.sites.filter(s => s.backend_status === 'bad').length;
-  $('#certWarnCount').textContent = state.sites.filter(s => CERT_WARN_STATES.has(s.cert_status)).length;
-  $('#dnsBadCount').textContent = state.sites.filter(s => hasDnsIssue(s)).length;
-  $('#serviceCount').textContent = state.services.length;
+  const badCount = state.sites.filter(s => s.backend_status === 'bad').length;
+  $('#backendBadCount').textContent = badCount;
+  const warnCount = state.sites.filter(s => CERT_WARN_STATES.has(s.cert_status)).length;
+  $('#certWarnCount').textContent = warnCount;
+
+  // 计算健康度
+  const totalSites = state.sites.length;
+  const healthySites = totalSites - badCount - warnCount;
+  const healthPercent = totalSites > 0 ? Math.round((healthySites / totalSites) * 100) : 100;
+  $('#healthPercent').innerHTML = `<span class="tag ${healthPercent >= 80 ? 'ok' : healthPercent >= 50 ? 'warn' : 'bad'}">${healthPercent}%</span>`;
+
   renderProblemRows();
   renderIssueRows();
   renderCertificateRows();
