@@ -76,8 +76,44 @@ sudo cat /etc/host-nginx-manager/web.env
 - 测试 nginx 配置
 - 重载 nginx
 - **应用内帮助文档**
+- **密码管理**（修改密码、重置密码）
+- **双因素认证（2FA）**
+- **Cookie Secure 模式**（HTTPS 环境）
 
 Web 面板本身不管理 `stream`、Rathole、`ssl_preread`。
+
+## 安全特性
+
+- ✅ 强密码策略（12位+复杂度要求）
+- ✅ PBKDF2 密码哈希存储
+- ✅ 双因素认证（TOTP）
+- ✅ 会话管理（30分钟超时）
+- ✅ 登录限流（5次失败锁定5分钟）
+- ✅ API 速率限制（每分钟60次）
+- ✅ 输入验证（防命令注入、路径遍历）
+- ✅ 安全 Cookie（HttpOnly、SameSite）
+
+### HTTPS 部署（推荐）
+
+如果通过 HTTPS 反向代理访问管理界面，可启用 Cookie Secure 模式：
+
+**安装时选择**：安装过程中会询问是否启用
+
+**后续切换**：
+```bash
+curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/install-web.sh | bash
+# 选择 3) 切换 Cookie Secure 模式
+```
+
+### 密码管理
+
+**修改密码**：登录后在"账户设置"中修改
+
+**忘记密码重置**：
+```bash
+curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/install-web.sh | bash
+# 选择 2) 重置登录密码
+```
 
 ## 证书管理
 
