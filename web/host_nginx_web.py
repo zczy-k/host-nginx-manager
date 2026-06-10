@@ -132,15 +132,15 @@ def validate_password_strength(password: str) -> tuple[bool, str]:
     if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
         return False, "密码必须包含特殊字符"
 
-    # 检查连续数字
-    sequential_nums = ['012','123','234','345','456','567','678','789','890','987','876','765','654','543','432','321','210']
+    # 检查连续数字（4位或更多）
+    sequential_nums = ['0123','1234','2345','3456','4567','5678','6789','8901','9876','8765','7654','6543','5432','4321','3210','2109']
     if any(seq in password for seq in sequential_nums):
-        return False, "密码不能包含连续数字"
+        return False, "密码不能包含4位或更多连续数字"
 
-    # 检查连续字母
-    sequential_letters = ['abc','bcd','cde','def','efg','fgh','ghi','hij','ijk','jkl','klm','lmn','mno','nop','opq','pqr','qrs','rst','stu','tuv','uvw','vwx','wxy','xyz','zyx','yxw','xwv','wvu','vut','uts','tsr','srq','rqp','qpo','pon','onm','nml','mlk','lkj','kji','jih','ihg','hgf','gfe','fed','edc','dcb','cba']
+    # 检查连续字母（4位或更多）
+    sequential_letters = ['abcd','bcde','cdef','defg','efgh','fghi','ghij','hijk','ijkl','jklm','klmn','lmno','mnop','nopq','opqr','pqrs','qrst','rstu','stuv','tuvw','uvwx','vwxy','wxyz','zyxw','yxwv','xwvu','wvut','vuts','utsr','tsrq','srqp','rqpo','qpon','ponm','onml','nmlk','mlkj','lkji','kjih','jihg','ihgf','hgfe','gfed','fedc','edcb','dcba']
     if any(seq in password.lower() for seq in sequential_letters):
-        return False, "密码不能包含连续字母"
+        return False, "密码不能包含4位或更多连续字母"
 
     return True, ""
 
@@ -632,8 +632,8 @@ APP_HTML = r'''<!doctype html>
                 <li>必须包含小写字母 (a-z)</li>
                 <li>必须包含数字 (0-9)</li>
                 <li>必须包含特殊字符 (!@#$%^&*)</li>
-                <li>不能包含连续数字（如 123、456）</li>
-                <li>不能包含连续字母（如 abc、xyz）</li>
+                <li>不能包含4位或更多连续数字（如 1234、5678）</li>
+                <li>不能包含4位或更多连续字母（如 abcd、stuv）</li>
               </ul>
             </div>
             <div id="passwordStrength" style="margin:10px 0"></div>
@@ -1033,11 +1033,11 @@ function togglePassword(inputId){
 }
 
 function checkPasswordStrength(password){
-  // 检查连续数字（如 123, 234, 012）
-  const hasSequentialNumbers = /(?:012|123|234|345|456|567|678|789|890|987|876|765|654|543|432|321|210)/i.test(password);
+  // 检查连续数字（4位或更多，如 1234, 0123, 9876）
+  const hasSequentialNumbers = /(?:0123|1234|2345|3456|4567|5678|6789|8901|9876|8765|7654|6543|5432|4321|3210|2109)/i.test(password);
 
-  // 检查连续字母（如 abc, xyz, cba）
-  const hasSequentialLetters = /(?:abc|bcd|cde|def|efg|fgh|ghi|hij|ijk|jkl|klm|lmn|mno|nop|opq|pqr|qrs|rst|stu|tuv|uvw|vwx|wxy|xyz|zyx|yxw|xwv|wvu|vut|uts|tsr|srq|rqp|qpo|pon|onm|nml|mlk|lkj|kji|jih|ihg|hgf|gfe|fed|edc|dcb|cba)/i.test(password);
+  // 检查连续字母（4位或更多，如 abcd, stuv, dcba）
+  const hasSequentialLetters = /(?:abcd|bcde|cdef|defg|efgh|fghi|ghij|hijk|ijkl|jklm|klmn|lmno|mnop|nopq|opqr|pqrs|qrst|rstu|stuv|tuvw|uvwx|vwxy|wxyz|zyxw|yxwv|xwvu|wvut|vuts|utsr|tsrq|srqp|rqpo|qpon|ponm|onml|nmlk|mlkj|lkji|kjih|jihg|ihgf|hgfe|gfed|fedc|edcb|dcba)/i.test(password);
 
   const checks = {
     length: password.length >= 12,
@@ -1116,8 +1116,8 @@ async function changePassword(e){
     if(!checks.lower) missing.push('小写字母');
     if(!checks.number) missing.push('数字');
     if(!checks.special) missing.push('特殊字符');
-    if(!checks.noSequentialNum) missing.push('不能有连续数字');
-    if(!checks.noSequentialLetter) missing.push('不能有连续字母');
+    if(!checks.noSequentialNum) missing.push('不能有4位以上连续数字');
+    if(!checks.noSequentialLetter) missing.push('不能有4位以上连续字母');
     showMsg(`密码不符合要求，缺少：${missing.join('、')}`, 'bad');
     return;
   }
