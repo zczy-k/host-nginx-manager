@@ -1097,6 +1097,7 @@ async function confirm2FA(secret){
   }
   const btn = document.querySelector('.modal-overlay .btn.primary');
   if(!btn) return;
+  const modal = btn.closest('.modal-overlay');
   const originalText = btn.textContent;
   btn.disabled = true;
   btn.textContent = '验证中...';
@@ -1104,7 +1105,7 @@ async function confirm2FA(secret){
     const result = await api('/api/account/2fa/confirm', {method:'POST', body:JSON.stringify({secret, code})});
     showMsg(result.message || '双因素认证已启用','ok');
     setTimeout(() => {
-      document.querySelector('.modal-overlay')?.remove();
+      modal?.remove();
       loadAccountInfo();
     }, 500);
   }catch(e){
