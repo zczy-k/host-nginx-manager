@@ -250,6 +250,12 @@ APP_HTML = r'''<!doctype html>
             <option value="https">HTTPS</option>
             <option value="http">HTTP</option>
           </select>
+          <select id="siteSort">
+            <option value="domain">域名 A-Z</option>
+            <option value="domain_desc">域名 Z-A</option>
+            <option value="status">状态优先</option>
+            <option value="https_first">HTTPS优先</option>
+          </select>
           <button class="btn" id="siteSearchClear" type="button">清空筛选</button>
         </div>
         <div style="overflow:auto"><table><thead><tr><th class="domain-col">域名</th><th>监听</th><th class="type-col">类型与状态</th><th>目标/目录</th><th class="source-col">来源</th><th class="actions-col">操作</th></tr></thead><tbody id="siteRows"></tbody></table></div>
@@ -1001,6 +1007,24 @@ function render(){
     return domain.includes(q) || names.includes(q) || target.includes(q) || source.includes(q);
   });
 
+  // 排序
+  const sortBy = $('#siteSort')?.value || 'domain';
+  filteredSites.sort((a, b) => {
+    if (sortBy === 'domain') {
+      return (a.domain || '').localeCompare(b.domain || '');
+    } else if (sortBy === 'domain_desc') {
+      return (b.domain || '').localeCompare(a.domain || '');
+    } else if (sortBy === 'status') {
+      // 异常优先
+      const aScore = (a.backend_status === 'bad' ? 2 : 0) + (CERT_WARN_STATES.has(a.cert_status) ? 1 : 0);
+      const bScore = (b.backend_status === 'bad' ? 2 : 0) + (CERT_WARN_STATES.has(b.cert_status) ? 1 : 0);
+      return bScore - aScore;
+    } else if (sortBy === 'https_first') {
+      return (b.https ? 1 : 0) - (a.https ? 1 : 0);
+    }
+    return 0;
+  });
+
   $('#siteSummary').textContent = `显示 ${filteredSites.length} / ${uniqueSites.length}`;
   const rows = filteredSites.map(s => {
     const domain = s.domain || '(默认站点)';
@@ -1421,7 +1445,8 @@ $('#reloadBtn').onclick = ()=>action('/api/nginx/reload',{}).catch(e=>showMsg(e.
 $('#problemJumpBtn').onclick = ()=>focusProblemSites();
 $('#siteSearch').addEventListener('input', e => { siteQuery = e.target.value; render(); });
 $('#siteFilter').addEventListener('change', e => { siteFilter = e.target.value; render(); });
-$('#siteSearchClear').onclick = () => { siteQuery = ''; siteFilter = 'all'; $('#siteSearch').value = ''; $('#siteFilter').value = 'all'; render(); };
+$('#siteSort').addEventListener('change', () => { render(); });
+$('#siteSearchClear').onclick = () => { siteQuery = ''; siteFilter = 'all'; $('#siteSearch').value = ''; $('#siteFilter').value = 'all'; $('#siteSort').value = 'domain'; render(); };
 $('#certSearch').addEventListener('input', e => { certQuery = e.target.value; render(); });
 $('#certFilter').addEventListener('change', e => { certFilter = e.target.value; render(); });
 $('#certSearchClear').onclick = () => { certQuery = ''; certFilter = 'all'; $('#certSearch').value = ''; $('#certFilter').value = 'all'; render(); };
