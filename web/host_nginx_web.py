@@ -195,6 +195,12 @@ APP_HTML = r'''<!doctype html>
 ''' + PAGE_CSS + r'''
 </head>
 <body>
+<div id="globalSearch" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;align-items:flex-start;justify-content:center;padding-top:10vh">
+  <div style="background:var(--panel);border-radius:12px;width:90%;max-width:600px;box-shadow:0 20px 40px rgba(0,0,0,0.3)">
+    <input id="globalSearchInput" type="text" placeholder="搜索站点、证书、操作... (Ctrl+K)" style="width:100%;border:none;padding:20px;font-size:16px;border-radius:12px 12px 0 0;background:var(--panel);color:var(--text);outline:none">
+    <div id="globalSearchResults" style="max-height:400px;overflow-y:auto;border-top:1px solid var(--line)"></div>
+  </div>
+</div>
 <div class="shell">
   <aside>
     <div class="brand">Host Nginx Manager</div>
@@ -352,7 +358,11 @@ APP_HTML = r'''<!doctype html>
             <h2>健康检查</h2>
             <div class="row">
               <button class="btn primary" onclick="runHealthCheck()">全站检查</button>
+              <button class="btn" onclick="toggleAutoCheck()">
+                <span id="autoCheckStatus">开启自动检查</span>
+              </button>
             </div>
+            <div style="margin-top:10px;font-size:12px;color:var(--muted)" id="autoCheckInfo">定时检查：未启用</div>
           </div>
           <div class="panel"><h2>输出</h2><pre id="output">等待操作...</pre></div>
         </div>
@@ -1412,6 +1422,153 @@ async function runHealthCheck(){
   if(!confirm('确认运行健康检查？\n\n将检查所有站点的：\n• 后端连接\n• DNS 解析\n• 证书有效期\n• Nginx 配置')) return;
   await action('/api/health/check', {domain: ''});
 }
+
+let autoCheckInterval = null;
+function toggleAutoCheck(){
+  if(autoCheckInterval){
+    clearInterval(autoCheckInterval);
+    autoCheckInterval = null;
+    $('#autoCheckStatus').textContent = '开启自动检查';
+    $('#autoCheckInfo').textContent = '定时检查：未启用';
+    localStorage.removeItem('autoCheck');
+  } else {
+    autoCheckInterval = setInterval(async () => {
+      try {
+        const res = await fetch('/api/health/check', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain:''})});
+        const data = await res.json();
+        if(data.code !== 0){
+          // 检测到问题，显示通知
+          const issues = (data.output || '').match(/✗/g);
+          if(issues && issues.length > 0){
+            showMsg(`检测到 ${issues.length} 个问题`, 'bad');
+          }
+        }
+      } catch(e){}
+    }, 300000); // 5分钟检查一次
+    $('#autoCheckStatus').textContent = '关闭自动检查';
+    $('#autoCheckInfo').textContent = '定时检查：每5分钟';
+    localStorage.setItem('autoCheck', 'enabled');
+  }
+}
+
+// 初始化自动检查
+if(localStorage.getItem('autoCheck') === 'enabled'){
+  toggleAutoCheck();
+}
+
+// 全局搜索
+function showGlobalSearch(){
+  $('#globalSearch').style.display = 'flex';
+  $('#globalSearchInput').focus();
+  $('#globalSearchInput').value = '';
+  performGlobalSearch('');
+}
+
+function hideGlobalSearch(){
+  $('#globalSearch').style.display = 'none';
+}
+
+$('#globalSearch').onclick = (e) => {
+  if(e.target.id === 'globalSearch') hideGlobalSearch();
+};
+
+$('#globalSearchInput').oninput = (e) => {
+  performGlobalSearch(e.target.value);
+};
+
+function performGlobalSearch(query){
+  if(!query){
+    $('#globalSearchResults').innerHTML = `
+      <div style="padding:20px;text-align:center;color:var(--muted)">
+        <div style="font-size:24px;margin-bottom:10px">🔍</div>
+        <div>输入关键词搜索站点、证书或操作</div>
+      </div>
+    `;
+    return;
+  }
+
+  const q = query.toLowerCase();
+  const results = [];
+
+  // 搜索站点
+  state.sites.forEach(s => {
+    if((s.domain || '').toLowerCase().includes(q) ||
+       (s.upstream || '').toLowerCase().includes(q)){
+      results.push({
+        type: 'site',
+        title: s.domain,
+        subtitle: s.upstream || s.root,
+        action: () => { switchView('sites'); hideGlobalSearch(); }
+      });
+    }
+  });
+
+  // 搜索证书
+  state.sites.forEach(s => {
+    if(s.https && (s.domain || '').toLowerCase().includes(q)){
+      results.push({
+        type: 'cert',
+        title: s.domain + ' 证书',
+        subtitle: `剩余 ${s.cert_days} 天`,
+        action: () => { switchView('certs'); hideGlobalSearch(); }
+      });
+    }
+  });
+
+  // 搜索操作
+  const actions = [
+    {title: '新增反向代理', view: 'create'},
+    {title: '查看所有站点', view: 'sites'},
+    {title: '证书管理', view: 'certs'},
+    {title: '健康检查', view: 'tools', fn: runHealthCheck},
+    {title: '配置备份', view: 'tools'},
+    {title: '问题诊断', view: 'issues'}
+  ];
+  actions.forEach(a => {
+    if(a.title.toLowerCase().includes(q)){
+      results.push({
+        type: 'action',
+        title: a.title,
+        subtitle: '快速操作',
+        action: () => {
+          if(a.fn){ a.fn(); }
+          switchView(a.view);
+          hideGlobalSearch();
+        }
+      });
+    }
+  });
+
+  if(results.length === 0){
+    $('#globalSearchResults').innerHTML = `
+      <div style="padding:20px;text-align:center;color:var(--muted)">
+        <div>未找到匹配的结果</div>
+      </div>
+    `;
+  } else {
+    $('#globalSearchResults').innerHTML = results.slice(0, 10).map((r, i) => `
+      <div onclick="globalSearchResults[${i}].action()" style="padding:15px 20px;cursor:pointer;border-bottom:1px solid var(--line);transition:background 0.15s"
+           onmouseover="this.style.background='var(--bg)'"
+           onmouseout="this.style.background='transparent'">
+        <div style="font-weight:500">${escapeHtml(r.title)}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">${escapeHtml(r.subtitle)}</div>
+      </div>
+    `).join('');
+    window.globalSearchResults = results;
+  }
+}
+
+// 快捷键
+document.addEventListener('keydown', (e) => {
+  if((e.ctrlKey || e.metaKey) && e.key === 'k'){
+    e.preventDefault();
+    showGlobalSearch();
+  }
+  if(e.key === 'Escape'){
+    hideGlobalSearch();
+  }
+});
+
 async function commentOutConfig(domain, source){ if(confirm(`确认注释掉这个nginx配置？\n\n域名: ${domain}\n配置文件: ${source}\n\n操作将：\n1. 注释掉该server块\n2. 创建备份文件\n3. 重载nginx\n\n该配置不会被删除，只是被注释。`)) await action('/api/nginx/comment-out',{domain, source}); }
 async function takeOverSite(domain, source){
   if(confirm(`🎯 确认纳入管理？
