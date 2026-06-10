@@ -370,7 +370,7 @@ APP_HTML = r'''<!doctype html>
           <h2>配置备份</h2>
           <div class="row">
             <button class="btn primary" onclick="createBackup()">创建备份</button>
-            <button class="btn" onclick="showBackupList()">查看备份</button>
+            <button class="btn" onclick="showBackupListModal()">恢复备份</button>
           </div>
         </div>
         <div class="panel">
@@ -1163,14 +1163,92 @@ async function createBackup(){
   if(!confirm('确认创建配置备份？\n\n将备份以下内容：\n• 所有站点配置\n• Nginx 配置文件\n• SSL 证书')) return;
   await action('/api/backup/create', {});
 }
-async function showBackupList(){
+async function showBackupListModal(){
   const res = await fetch('/api/backup/list', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
   const data = await res.json();
-  if(data.code === 0){
-    alert(data.output || '备份列表为空');
-  } else {
+
+  if(data.code !== 0){
     alert('获取备份列表失败：\n' + (data.output || data.error));
+    return;
   }
+
+  // 解析备份列表
+  const lines = (data.output || '').split('\n');
+  const backups = [];
+  let inList = false;
+
+  for(const line of lines){
+    if(line.includes('----')) {
+      inList = true;
+      continue;
+    }
+    if(inList && line.trim() && !line.includes('备份目录') && !line.includes('总数')){
+      const parts = line.trim().split(/\s+/);
+      if(parts.length >= 3){
+        backups.push({
+          file: parts[0],
+          size: parts[1],
+          time: parts.slice(2).join(' ')
+        });
+      }
+    }
+  }
+
+  if(backups.length === 0){
+    alert('暂无备份文件');
+    return;
+  }
+
+  // 创建模态框
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.innerHTML = `
+    <div class="modal-content">
+      <h2>恢复配置备份</h2>
+      <p style="color:#f39c12;margin-bottom:15px">⚠️ 恢复备份将覆盖当前配置，操作前会自动备份当前配置</p>
+      <div style="max-height:400px;overflow-y:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead>
+            <tr style="background:#34495e;color:white">
+              <th style="padding:8px;text-align:left">文件名</th>
+              <th style="padding:8px;text-align:left">大小</th>
+              <th style="padding:8px;text-align:left">创建时间</th>
+              <th style="padding:8px;text-align:center">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${backups.map(b => `
+              <tr style="border-bottom:1px solid #ddd">
+                <td style="padding:8px;font-family:monospace;font-size:12px">${b.file}</td>
+                <td style="padding:8px">${b.size}</td>
+                <td style="padding:8px">${b.time}</td>
+                <td style="padding:8px;text-align:center">
+                  <button class="btn primary" style="padding:5px 10px;font-size:12px" onclick="restoreBackup('${b.file}')">恢复</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="row" style="margin-top:15px">
+        <button class="btn" onclick="this.closest('.modal').remove()">关闭</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+async function restoreBackup(filename){
+  const backupPath = '/etc/nginx/vps-proxy-manager/backups/' + filename;
+
+  if(!confirm(`确认恢复备份？\n\n备份文件：${filename}\n\n操作将：\n✓ 自动备份当前配置\n✓ 恢复选定的备份\n✓ 测试 nginx 配置\n✓ 失败自动回滚\n\n此操作不可撤销，是否继续？`)){
+    return;
+  }
+
+  // 关闭模态框
+  document.querySelector('.modal')?.remove();
+
+  // 执行恢复
+  await action('/api/backup/restore', {backup_file: backupPath});
 }
 async function runHealthCheck(){
   if(!confirm('确认运行健康检查？\n\n将检查所有站点的：\n• 后端连接\n• DNS 解析\n• 证书有效期\n• Nginx 配置')) return;
