@@ -282,7 +282,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=/etc/nginx /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /var/log/nginx /run /tmp
+ReadWritePaths=/etc/nginx /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /var/log/nginx /run /tmp /etc/host-nginx-manager
 
 [Install]
 WantedBy=multi-user.target
