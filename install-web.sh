@@ -311,6 +311,34 @@ pwdhash = hashlib.pbkdf2_hmac('sha256', '$password'.encode(), salt, 100000)
 print(base64.b64encode(salt + pwdhash).decode('ascii'))
 ")
 
+    # 询问是否通过 HTTPS 访问
+    local cookie_secure="false"
+    echo ""
+    echo "════════════════════════════════════════════════"
+    echo "🔒 安全选项：Cookie Secure 标志"
+    echo "════════════════════════════════════════════════"
+    echo ""
+    echo "如果您通过 HTTPS（反向代理）访问管理界面，建议启用此选项。"
+    echo ""
+    echo "作用："
+    echo "  • Cookie 只通过 HTTPS 传输，防止中间人攻击"
+    echo "  • 提升会话安全性"
+    echo ""
+    echo "注意："
+    echo "  • 启用后只能通过 HTTPS 访问（HTTP 将无法登录）"
+    echo "  • 如果是 HTTP 直连（如 http://IP:8098），请选择 N"
+    echo ""
+    printf "是否启用 Cookie Secure 标志？[y/N]: "
+    local secure_choice=""
+    read -r secure_choice <"${TTY_IN:-/dev/stdin}" || secure_choice="n"
+    if [[ "$secure_choice" =~ ^[Yy]$ ]]; then
+        cookie_secure="true"
+        log "✓ Cookie Secure 已启用（仅 HTTPS 访问）"
+    else
+        log "Cookie Secure 未启用（HTTP/HTTPS 均可访问）"
+    fi
+    echo ""
+
     info "生成配置文件..."
     cat > "$ENV_FILE" <<EOF
 HNG_MANAGER_BIN=$MANAGER_BIN
@@ -318,6 +346,7 @@ HNG_WEB_BIND=$BIND_ADDR
 HNG_WEB_PORT=$PORT
 HNG_WEB_PASSWORD_HASH=$password_hash
 HNG_WEB_SECRET=$secret
+HNG_COOKIE_SECURE=$cookie_secure
 EOF
     chmod 0600 "$ENV_FILE"
 
