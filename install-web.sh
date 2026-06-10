@@ -131,6 +131,34 @@ do_upgrade() {
     chmod 0755 "$WEB_DIR/host_nginx_web.py"
     log "Web界面已更新"
 
+    # 3.5. 更新 systemd 服务文件
+    info "3.5/5 更新系统服务配置..."
+    cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Host Nginx Manager Web UI
+After=network.target nginx.service
+Wants=nginx.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=$ENV_FILE
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/python3 $WEB_DIR/host_nginx_web.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/etc/nginx /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /var/log/nginx /run /tmp /etc/host-nginx-manager
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    log "服务配置已更新"
+
     # 4. 重启服务
     info "4/5 重启Web服务..."
     systemctl daemon-reload
