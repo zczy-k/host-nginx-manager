@@ -212,13 +212,13 @@ host-nginx-manager help
 如果后端是本机 `3001` 端口：
 
 ```bash
-sudo host-nginx-manager add metapi.cni.de5.net 127.0.0.1:3001 --email you@example.com
+sudo host-nginx-manager add api.example.com 127.0.0.1:3001 --email you@example.com
 ```
 
 这会：
 
-- 写入 `/etc/nginx/sites-available/vpspm-metapi.cni.de5.net.conf`
-- 创建 `/etc/nginx/sites-enabled/vpspm-metapi.cni.de5.net.conf` 链接
+- 写入 `/etc/nginx/sites-available/vpspm-api.example.com.conf`
+- 创建 `/etc/nginx/sites-enabled/vpspm-api.example.com.conf` 链接
 - 先创建 HTTP 站点用于 ACME 验证
 - 使用 `certbot certonly --webroot` 申请证书
 - 启用 HTTPS 并将 HTTP 跳转到 HTTPS
@@ -228,13 +228,13 @@ sudo host-nginx-manager add metapi.cni.de5.net 127.0.0.1:3001 --email you@exampl
 ## 只创建 HTTP，不立即申请证书
 
 ```bash
-sudo host-nginx-manager add metapi.cni.de5.net 127.0.0.1:3001 --no-ssl
+sudo host-nginx-manager add api.example.com 127.0.0.1:3001 --no-ssl
 ```
 
 稍后再启用 HTTPS：
 
 ```bash
-sudo host-nginx-manager enable-ssl metapi.cni.de5.net --email you@example.com
+sudo host-nginx-manager enable-ssl api.example.com --email you@example.com
 ```
 
 ## 后端是自签 HTTPS
@@ -253,7 +253,7 @@ sudo host-nginx-manager add nas.example.com 127.0.0.1:58000 \
 
 ```bash
 sudo host-nginx-manager list
-sudo host-nginx-manager show metapi.cni.de5.net
+sudo host-nginx-manager show api.example.com
 sudo host-nginx-manager test
 sudo host-nginx-manager reload
 ```
@@ -261,13 +261,13 @@ sudo host-nginx-manager reload
 删除站点：
 
 ```bash
-sudo host-nginx-manager remove metapi.cni.de5.net --yes
+sudo host-nginx-manager remove api.example.com --yes
 ```
 
 删除站点并尝试删除证书：
 
 ```bash
-sudo host-nginx-manager remove metapi.cni.de5.net --delete-cert --yes
+sudo host-nginx-manager remove api.example.com --delete-cert --yes
 ```
 
 ## 卸载 Web 面板

@@ -85,11 +85,11 @@ $APP_LABEL v$SCRIPT_VERSION
 示例:
   host-nginx-manager.sh add api.example.com 127.0.0.1:3001 --email you@example.com
   host-nginx-manager.sh update api.example.com 127.0.0.1:3002 --upstream-scheme http
-  host-nginx-manager.sh add metapi.cni.de5.net 127.0.0.1:3001 --upstream-scheme http --no-ssl
-  host-nginx-manager.sh enable-ssl metapi.cni.de5.net --email you@example.com
-  host-nginx-manager.sh renew metapi.cni.de5.net
-  host-nginx-manager.sh set-auto-renew metapi.cni.de5.net 1
-  host-nginx-manager.sh set-auto-renew metapi.cni.de5.net 0
+  host-nginx-manager.sh add api.example.com 127.0.0.1:3001 --upstream-scheme http --no-ssl
+  host-nginx-manager.sh enable-ssl api.example.com --email you@example.com
+  host-nginx-manager.sh renew api.example.com
+  host-nginx-manager.sh set-auto-renew api.example.com 1
+  host-nginx-manager.sh set-auto-renew api.example.com 0
   host-nginx-manager.sh remove api.example.com --delete-cert --yes
 EOF
 }
