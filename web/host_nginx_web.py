@@ -1064,7 +1064,7 @@ async function changePassword(e){
     return;
   }
 
-  if(!confirm('确认修改密码？\n\n修改后需要重新登录')) return;
+  if(!window.confirm('确认修改密码？\n\n修改后需要重新登录')) return;
 
   try{
     await api('/api/account/change-password', {method:'POST', body:JSON.stringify({currentPassword:current, newPassword:newPass})});
