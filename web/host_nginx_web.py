@@ -1053,6 +1053,11 @@ async function changePassword(e){
     return;
   }
 
+  if(current === newPass){
+    showMsg('新密码与当前密码相同，无需修改','bad');
+    return;
+  }
+
   const {checks,score} = checkPasswordStrength(newPass);
   if(score < 5){
     const missing = [];
@@ -4207,6 +4212,11 @@ class Handler(BaseHTTPRequestHandler):
 
             if not valid:
                 self.send_json({"error": "当前密码错误"}, 403)
+                return
+
+            # 检查新密码是否与当前密码相同
+            if current == new_password:
+                self.send_json({"error": "新密码与当前密码相同"}, 400)
                 return
 
             # 生成新密码 hash
