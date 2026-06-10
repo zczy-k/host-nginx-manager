@@ -32,6 +32,7 @@ BIND = os.environ.get("HNG_WEB_BIND", "0.0.0.0")
 PORT = int(os.environ.get("HNG_WEB_PORT", "8098"))
 PASSWORD = os.environ.get("HNG_WEB_PASSWORD", "")
 PASSWORD_HASH = os.environ.get("HNG_WEB_PASSWORD_HASH", "")  # 优先使用 hash
+TOTP_SECRET = os.environ.get("HNG_WEB_TOTP_SECRET", "")  # 2FA密钥
 SECRET = os.environ.get("HNG_WEB_SECRET", "") or secrets.token_urlsafe(32)
 COOKIE_NAME = "hng_session"
 SESSION_TTL = 30 * 60  # 30分钟超时
@@ -40,6 +41,58 @@ LOGIN_ATTEMPTS = {}  # {ip: {"count": int, "locked_until": timestamp}}
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z0-9.-]+$")
 CERT_WARN_DAYS = int(os.environ.get("HNG_CERT_WARN_DAYS", "30"))
 CERT_CRITICAL_DAYS = int(os.environ.get("HNG_CERT_CRITICAL_DAYS", "7"))
+
+def generate_totp_secret() -> str:
+    """生成 TOTP 密钥（Base32）"""
+    return base64.b32encode(secrets.token_bytes(20)).decode('ascii')
+
+def generate_totp_code(secret: str) -> str:
+    """生成 TOTP 6位数字码"""
+    import struct
+    key = base64.b32decode(secret)
+    timestamp = int(time.time() // 30)
+    msg = struct.pack('>Q', timestamp)
+    hmac_hash = hmac.new(key, msg, hashlib.sha1).digest()
+    offset = hmac_hash[-1] & 0x0F
+    code = struct.unpack('>I', hmac_hash[offset:offset+4])[0] & 0x7FFFFFFF
+    return str(code % 1000000).zfill(6)
+
+def verify_totp_code(secret: str, code: str) -> bool:
+    """验证 TOTP 码（允许前后30秒误差）"""
+    if not secret or not code:
+        return False
+    try:
+        import struct
+        key = base64.b32decode(secret)
+        timestamp = int(time.time() // 30)
+        for offset in [-1, 0, 1]:  # 检查前后30秒
+            msg = struct.pack('>Q', timestamp + offset)
+            hmac_hash = hmac.new(key, msg, hashlib.sha1).digest()
+            pos = hmac_hash[-1] & 0x0F
+            expected = struct.unpack('>I', hmac_hash[pos:pos+4])[0] & 0x7FFFFFFF
+            expected_code = str(expected % 1000000).zfill(6)
+            if hmac.compare_digest(code, expected_code):
+                return True
+        return False
+    except Exception:
+        return False
+
+def generate_totp_qr(secret: str, account: str = "admin") -> str:
+    """生成 TOTP 二维码（Base64）"""
+    try:
+        import urllib.parse
+        # otpauth://totp/Host%20Nginx%20Manager:admin?secret=xxx&issuer=Host%20Nginx%20Manager
+        label = urllib.parse.quote(f"Host Nginx Manager:{account}")
+        issuer = urllib.parse.quote("Host Nginx Manager")
+        uri = f"otpauth://totp/{label}?secret={secret}&issuer={issuer}"
+
+        # 简单的二维码生成（纯文本，前端可用库生成）
+        # 这里返回一个指向在线QR生成器的URL
+        qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=250x250&data={urllib.parse.quote(uri)}"
+        return qr_url
+    except Exception:
+        return ""
+
 
 def hash_password(password: str) -> str:
     """使用 PBKDF2-SHA256 哈希密码"""
@@ -207,6 +260,7 @@ LOGIN_HTML = r'''<!doctype html>
     <section id="loginMessage" class="login-message"></section>
     <form id="loginForm">
       <label>管理密码<input id="password" type="password" autocomplete="current-password" required></label>
+      <label id="totpLabel" style="display:none">双因素认证码<input id="totpCode" type="text" pattern="[0-9]{6}" maxlength="6" placeholder="000000" autocomplete="off"></label>
       <button id="loginBtn" class="btn primary" type="submit">登录</button>
     </form>
   </section>
@@ -223,10 +277,33 @@ $('#loginForm').addEventListener('submit', async e => {
   btn.textContent = '登录中...';
   showMsg('');
   try {
-    await api('/api/login',{method:'POST',body:JSON.stringify({password:$('#password').value})});
-    window.location.replace('/');
+    const payload = {password: $('#password').value};
+    const totpInput = $('#totpCode');
+    if(totpInput.offsetParent !== null){  // 可见
+      payload.totpCode = totpInput.value;
+    }
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if(!res.ok){
+      if(data.require2FA){
+        // 需要2FA，显示输入框
+        $('#totpLabel').style.display = '';
+        $('#totpCode').required = true;
+        $('#totpCode').focus();
+        showMsg('请输入双因素认证码', 'info');
+      }else{
+        throw new Error(data.error || '登录失败');
+      }
+    }else{
+      window.location.replace('/');
+    }
   } catch(err) {
     showMsg(err.message,'bad');
+  } finally {
     btn.disabled = false;
     btn.textContent = '登录';
   }
@@ -261,6 +338,7 @@ APP_HTML = r'''<!doctype html>
       <button data-view="issues">问题</button>
       <button data-view="services">本机服务</button>
       <button data-view="tools">维护</button>
+      <button data-view="account">账户设置</button>
       <button data-view="help">帮助</button>
     </nav>
   </aside>
@@ -488,6 +566,43 @@ APP_HTML = r'''<!doctype html>
         </div>
       </div>
     </section>
+    <section id="account" class="view">
+      <div class="panel">
+        <h2>账户设置</h2>
+
+        <details open>
+          <summary>🔑 修改密码</summary>
+          <form id="changePasswordForm" style="max-width:500px;margin-top:15px">
+            <label>当前密码<input id="currentPassword" type="password" required autocomplete="current-password"></label>
+            <label>新密码<input id="newPassword" type="password" required autocomplete="new-password" minlength="8"></label>
+            <label>确认新密码<input id="confirmPassword" type="password" required autocomplete="new-password"></label>
+            <div class="notice" style="margin:10px 0;font-size:13px">
+              <strong>密码要求：</strong>
+              <ul style="margin:5px 0 0 20px">
+                <li>最少 8 位字符</li>
+                <li>必须包含大写字母 (A-Z)</li>
+                <li>必须包含小写字母 (a-z)</li>
+                <li>必须包含数字 (0-9)</li>
+                <li>必须包含特殊字符 (!@#$%^&*)</li>
+              </ul>
+            </div>
+            <div id="passwordStrength" style="margin:10px 0"></div>
+            <button type="submit" class="btn primary">修改密码</button>
+          </form>
+        </details>
+
+        <details style="margin-top:20px">
+          <summary>🔐 双因素认证 (2FA)</summary>
+          <div id="twoFactorStatus" style="margin-top:15px"></div>
+        </details>
+
+        <details style="margin-top:20px">
+          <summary>📊 登录信息</summary>
+          <div id="sessionInfo" style="margin-top:15px"></div>
+        </details>
+      </div>
+    </section>
+
     <section id="help" class="view">
       <div class="panel help-content">
         <h1>Host Nginx Manager 使用帮助</h1>
@@ -734,7 +849,7 @@ let siteFilter = 'all';
 let showAllSites = false;
 let certQuery = '';
 let certFilter = 'all';
-const VIEW_TITLES = {dashboard:'概览',issues:'问题',sites:'站点',services:'本机服务',certs:'证书',create:'新增反代',tools:'维护',help:'帮助'};
+const VIEW_TITLES = {dashboard:'概览',issues:'问题',sites:'站点',services:'本机服务',certs:'证书',create:'新增反代',tools:'维护',account:'账户设置',help:'帮助'};
 
 function toggleTheme(){
   const currentTheme = document.documentElement.getAttribute('data-theme');
@@ -846,11 +961,167 @@ function showMsg(text, type='info'){
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 async function api(path, opts={}){ const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); if(res.status===401){ window.location.replace('/login'); throw new Error('未登录'); } const data = await res.json(); if(!res.ok) throw new Error(data.error || data.output || '请求失败'); return data; }
 async function load(){ state = await api('/api/status'); render(); }
+
+function checkPasswordStrength(password){
+  const checks = {
+    length: password.length >= 8,
+    upper: /[A-Z]/.test(password),
+    lower: /[a-z]/.test(password),
+    number: /[0-9]/.test(password),
+    special: /[!@#$%^&*(),.?":{}|<>]/.test(password)
+  };
+  const score = Object.values(checks).filter(Boolean).length;
+  let strength = '', color = '';
+  if(score < 3) { strength = '弱'; color = 'var(--red)'; }
+  else if(score < 5) { strength = '中'; color = 'var(--amber)'; }
+  else { strength = '强'; color = 'var(--green)'; }
+  return {checks, score, strength, color};
+}
+
+async function loadAccountInfo(){
+  try{
+    const data = await api('/api/account/info');
+    // 显示2FA状态
+    const twoFactorEl = $('#twoFactorStatus');
+    if(data.twoFactorEnabled){
+      twoFactorEl.innerHTML = `
+        <div class="notice" style="background:var(--blue2);border-color:var(--blue)">
+          <strong>✓ 已启用双因素认证</strong>
+          <p style="margin:5px 0">您的账户受到双因素认证保护</p>
+        </div>
+        <button class="btn danger" style="margin-top:10px" onclick="disable2FA()">禁用双因素认证</button>
+      `;
+    }else{
+      twoFactorEl.innerHTML = `
+        <div class="notice" style="background:#fff3cd;border-color:var(--amber)">
+          <strong>⚠️ 未启用双因素认证</strong>
+          <p style="margin:5px 0">启用后可大幅提升账户安全性</p>
+        </div>
+        <button class="btn primary" style="margin-top:10px" onclick="setup2FA()">启用双因素认证</button>
+      `;
+    }
+    // 显示登录信息
+    const sessionEl = $('#sessionInfo');
+    sessionEl.innerHTML = `
+      <table style="width:100%;max-width:500px">
+        <tr><td><strong>Session 超时</strong></td><td>30 分钟无操作自动登出</td></tr>
+        <tr><td><strong>登录限流</strong></td><td>5次失败锁定5分钟</td></tr>
+        <tr><td><strong>密码存储</strong></td><td>PBKDF2-SHA256 (100,000 迭代)</td></tr>
+      </table>
+    `;
+  }catch(e){
+    showMsg(e.message,'bad');
+  }
+}
+
+async function changePassword(e){
+  e.preventDefault();
+  const current = $('#currentPassword').value;
+  const newPass = $('#newPassword').value;
+  const confirm = $('#confirmPassword').value;
+
+  if(newPass !== confirm){
+    showMsg('两次输入的新密码不一致','bad');
+    return;
+  }
+
+  const {checks,score} = checkPasswordStrength(newPass);
+  if(score < 5){
+    const missing = [];
+    if(!checks.length) missing.push('至少8位');
+    if(!checks.upper) missing.push('大写字母');
+    if(!checks.lower) missing.push('小写字母');
+    if(!checks.number) missing.push('数字');
+    if(!checks.special) missing.push('特殊字符');
+    showMsg(`密码不符合要求，缺少：${missing.join('、')}`, 'bad');
+    return;
+  }
+
+  if(!confirm('确认修改密码？\n\n修改后需要重新登录')) return;
+
+  try{
+    await api('/api/account/change-password', {method:'POST', body:JSON.stringify({currentPassword:current, newPassword:newPass})});
+    showMsg('密码修改成功，请重新登录', 'ok');
+    setTimeout(() => { window.location.href = '/login'; }, 2000);
+  }catch(e){
+    showMsg(e.message,'bad');
+  }
+}
+
+async function setup2FA(){
+  try{
+    const data = await api('/api/account/2fa/setup', {method:'POST', body:'{}'});
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay active';
+    modal.innerHTML = `
+      <div class="modal" style="width:600px;max-width:90vw">
+        <div style="padding:24px">
+          <h2 style="margin:0 0 15px">设置双因素认证</h2>
+          <div style="text-align:center;margin:20px 0">
+            <img src="${data.qrCode}" alt="QR Code" style="max-width:250px;border:1px solid var(--line);border-radius:8px">
+            <p style="margin:15px 0;color:var(--muted)">使用验证器应用扫描此二维码</p>
+            <div style="background:var(--bg);padding:10px;border-radius:6px;font-family:monospace;font-size:14px">${data.secret}</div>
+            <p style="margin:10px 0;font-size:13px;color:var(--muted)">如无法扫描，请手动输入上述密钥</p>
+          </div>
+          <div class="notice" style="margin:15px 0">
+            <strong>支持的验证器：</strong>
+            <ul style="margin:5px 0 0 20px">
+              <li>Google Authenticator</li>
+              <li>Microsoft Authenticator</li>
+              <li>Authy</li>
+              <li>1Password</li>
+            </ul>
+          </div>
+          <label>输入验证器生成的6位数字
+            <input id="totpCode" type="text" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required autocomplete="off">
+          </label>
+          <div class="row" style="margin-top:15px;gap:10px">
+            <button class="btn primary" onclick="confirm2FA('${data.secret}')">确认并启用</button>
+            <button class="btn" onclick="this.closest('.modal-overlay').remove()">取消</button>
+          </div>
+        </div>
+      </div>
+    `;
+    modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+    document.body.appendChild(modal);
+  }catch(e){
+    showMsg(e.message,'bad');
+  }
+}
+
+async function confirm2FA(secret){
+  const code = $('#totpCode').value.trim();
+  if(!code || code.length !== 6){
+    showMsg('请输入6位验证码','bad');
+    return;
+  }
+  try{
+    await api('/api/account/2fa/confirm', {method:'POST', body:JSON.stringify({secret, code})});
+    showMsg('双因素认证已启用','ok');
+    document.querySelector('.modal-overlay')?.remove();
+    loadAccountInfo();
+  }catch(e){
+    showMsg(e.message,'bad');
+  }
+}
+
+async function disable2FA(){
+  if(!confirm('确认禁用双因素认证？\n\n这会降低账户安全性')) return;
+  try{
+    await api('/api/account/2fa/disable', {method:'POST', body:'{}'});
+    showMsg('双因素认证已禁用','ok');
+    loadAccountInfo();
+  }catch(e){
+    showMsg(e.message,'bad');
+  }
+}
+
 function switchView(view){
   document.querySelectorAll('.view').forEach(x => x.classList.toggle('active', x.id === view));
   document.querySelectorAll('.nav button').forEach(x => x.classList.toggle('active', x.dataset.view === view));
   $('#title').textContent = VIEW_TITLES[view] || VIEW_TITLES.dashboard;
   $('#message').innerHTML = ''; // 切换页面时清空通知
+  if(view === 'account') loadAccountInfo();
 }
 function hasDnsIssue(site){
   return site.dns_status === 'bad' || site.dns_status === 'error';
@@ -1686,6 +1957,52 @@ document.addEventListener('keydown', (e) => {
   }
   if(e.key === 'Escape'){
     hideGlobalSearch();
+  }
+});
+
+// 密码强度实时检测
+document.addEventListener('DOMContentLoaded', () => {
+  const newPasswordInput = $('#newPassword');
+  if(newPasswordInput){
+    newPasswordInput.addEventListener('input', (e) => {
+      const password = e.target.value;
+      const strengthEl = $('#passwordStrength');
+      if(!password){
+        strengthEl.innerHTML = '';
+        return;
+      }
+      const {checks, strength, color} = checkPasswordStrength(password);
+      strengthEl.innerHTML = `
+        <div style="padding:10px;background:var(--bg);border-radius:6px;font-size:13px">
+          <div style="margin-bottom:8px"><strong>密码强度：</strong> <span style="color:${color};font-weight:bold">${strength}</span></div>
+          <div style="display:grid;gap:4px">
+            <div style="color:${checks.length ? 'var(--green)' : 'var(--muted)'}">
+              ${checks.length ? '✓' : '○'} 至少8位字符
+            </div>
+            <div style="color:${checks.upper ? 'var(--green)' : 'var(--muted)'}">
+              ${checks.upper ? '✓' : '○'} 包含大写字母
+            </div>
+            <div style="color:${checks.lower ? 'var(--green)' : 'var(--muted)'}">
+              ${checks.lower ? '✓' : '○'} 包含小写字母
+            </div>
+            <div style="color:${checks.number ? 'var(--green)' : 'var(--muted)'}">
+              ${checks.number ? '✓' : '○'} 包含数字
+            </div>
+            <div style="color:${checks.special ? 'var(--green)' : 'var(--muted)'}">
+              ${checks.special ? '✓' : '○'} 包含特殊字符
+            </div>
+          </div>
+        </div>
+      `;
+    });
+  }
+});
+
+// 修改密码表单提交
+document.addEventListener('DOMContentLoaded', () => {
+  const form = $('#changePasswordForm');
+  if(form){
+    form.addEventListener('submit', changePassword);
   }
 });
 
@@ -3749,6 +4066,7 @@ class Handler(BaseHTTPRequestHandler):
 
             # 验证密码
             password_input = str(data.get("password", ""))
+            totp_code = str(data.get("totpCode", ""))
             valid = False
 
             if PASSWORD_HASH:
@@ -3765,6 +4083,16 @@ class Handler(BaseHTTPRequestHandler):
                 record_failed_login(client_ip)
                 self.send_json({"error": "密码错误"}, 403)
                 return
+
+            # 验证 2FA（如果已启用）
+            if TOTP_SECRET:
+                if not totp_code:
+                    self.send_json({"error": "需要双因素认证码", "require2FA": True}, 403)
+                    return
+                if not verify_totp_code(TOTP_SECRET, totp_code):
+                    record_failed_login(client_ip)
+                    self.send_json({"error": "双因素认证码错误"}, 403)
+                    return
 
             # 登录成功，创建 session
             token = secrets.token_urlsafe(32)
@@ -3793,6 +4121,102 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if not self.require_auth():
+            return
+
+        # 账户管理 API
+        if path == "/api/account/info":
+            self.send_json({
+                "twoFactorEnabled": bool(TOTP_SECRET)
+            })
+            return
+
+        if path == "/api/account/change-password":
+            current = str(data.get("currentPassword", ""))
+            new_password = str(data.get("newPassword", ""))
+
+            # 验证当前密码
+            valid = False
+            if PASSWORD_HASH:
+                valid = verify_password(current, PASSWORD_HASH)
+            elif PASSWORD:
+                valid = hmac.compare_digest(current, PASSWORD)
+
+            if not valid:
+                self.send_json({"error": "当前密码错误"}, 403)
+                return
+
+            # 生成新密码 hash
+            new_hash = hash_password(new_password)
+
+            # 更新配置文件
+            env_file = pathlib.Path("/etc/host-nginx-manager/web.env")
+            if env_file.exists():
+                lines = env_file.read_text().splitlines()
+                new_lines = []
+                updated = False
+                for line in lines:
+                    if line.startswith("HNG_WEB_PASSWORD_HASH="):
+                        new_lines.append(f"HNG_WEB_PASSWORD_HASH={new_hash}")
+                        updated = True
+                    elif line.startswith("HNG_WEB_PASSWORD="):
+                        continue  # 删除明文密码
+                    else:
+                        new_lines.append(line)
+                if not updated:
+                    new_lines.append(f"HNG_WEB_PASSWORD_HASH={new_hash}")
+                env_file.write_text("\n".join(new_lines) + "\n")
+
+                self.send_json({"message": "密码已更新，需要重启服务生效"})
+            else:
+                self.send_json({"error": "配置文件不存在"}, 500)
+            return
+
+        if path == "/api/account/2fa/setup":
+            secret = generate_totp_secret()
+            qr_url = generate_totp_qr(secret)
+            self.send_json({"secret": secret, "qrCode": qr_url})
+            return
+
+        if path == "/api/account/2fa/confirm":
+            secret = str(data.get("secret", ""))
+            code = str(data.get("code", ""))
+
+            if not verify_totp_code(secret, code):
+                self.send_json({"error": "验证码错误"}, 403)
+                return
+
+            # 保存到配置文件
+            env_file = pathlib.Path("/etc/host-nginx-manager/web.env")
+            if env_file.exists():
+                lines = env_file.read_text().splitlines()
+                new_lines = []
+                updated = False
+                for line in lines:
+                    if line.startswith("HNG_WEB_TOTP_SECRET="):
+                        new_lines.append(f"HNG_WEB_TOTP_SECRET={secret}")
+                        updated = True
+                    else:
+                        new_lines.append(line)
+                if not updated:
+                    new_lines.append(f"HNG_WEB_TOTP_SECRET={secret}")
+                env_file.write_text("\n".join(new_lines) + "\n")
+
+                self.send_json({"message": "双因素认证已启用，需要重启服务生效"})
+            else:
+                self.send_json({"error": "配置文件不存在"}, 500)
+            return
+
+        if path == "/api/account/2fa/disable":
+            # 删除 2FA 配置
+            env_file = pathlib.Path("/etc/host-nginx-manager/web.env")
+            if env_file.exists():
+                lines = env_file.read_text().splitlines()
+                new_lines = [line for line in lines if not line.startswith("HNG_WEB_TOTP_SECRET=")]
+                env_file.write_text("\n".join(new_lines) + "\n")
+
+                self.send_json({"message": "双因素认证已禁用，需要重启服务生效"})
+            else:
+                self.send_json({"error": "配置文件不存在"}, 500)
             return
 
         routes = {
