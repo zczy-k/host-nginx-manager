@@ -51,6 +51,7 @@ PAGE_CSS = r'''
     [data-theme="dark"] input, [data-theme="dark"] select, [data-theme="dark"] textarea { background:#3a3b3c; color:#e4e6eb; border-color:#5a5b5c; }
     [data-theme="dark"] .tag { background:#3a3b3c; color:#b0b3b8; }
     [data-theme="dark"] .notice { background:#2d2e2f; border-color:#5a5b5c; }
+    [data-theme="dark"] .modal { background:#242526; color:#e4e6eb; }
     * { box-sizing: border-box; }
     body { margin:0; font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
     button,input,select { font:inherit; }
@@ -1378,40 +1379,43 @@ async function showBackupListModal(){
 
   // 创建模态框
   const modal = document.createElement('div');
-  modal.className = 'modal';
+  modal.className = 'modal-overlay active';
   modal.innerHTML = `
-    <div class="modal-content">
-      <h2>恢复配置备份</h2>
-      <p style="color:#f39c12;margin-bottom:15px">⚠️ 恢复备份将覆盖当前配置，操作前会自动备份当前配置</p>
-      <div style="max-height:400px;overflow-y:auto">
-        <table style="width:100%;border-collapse:collapse">
-          <thead>
-            <tr style="background:#34495e;color:white">
-              <th style="padding:8px;text-align:left">文件名</th>
-              <th style="padding:8px;text-align:left">大小</th>
-              <th style="padding:8px;text-align:left">创建时间</th>
-              <th style="padding:8px;text-align:center">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${backups.map(b => `
-              <tr style="border-bottom:1px solid #ddd">
-                <td style="padding:8px;font-family:monospace;font-size:12px">${b.file}</td>
-                <td style="padding:8px">${b.size}</td>
-                <td style="padding:8px">${b.time}</td>
-                <td style="padding:8px;text-align:center">
-                  <button class="btn primary" style="padding:5px 10px;font-size:12px" onclick="restoreBackup('${b.file}')">恢复</button>
-                </td>
+    <div class="modal" style="width:800px;max-width:90vw">
+      <div style="padding:24px">
+        <h2 style="margin:0 0 10px">恢复配置备份</h2>
+        <p style="color:var(--amber);margin-bottom:15px">⚠️ 恢复备份将覆盖当前配置，操作前会自动备份当前配置</p>
+        <div style="max-height:400px;overflow-y:auto;border:1px solid var(--line);border-radius:8px">
+          <table style="width:100%">
+            <thead>
+              <tr>
+                <th>文件名</th>
+                <th>大小</th>
+                <th>创建时间</th>
+                <th style="text-align:center">操作</th>
               </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-      <div class="row" style="margin-top:15px">
-        <button class="btn" onclick="this.closest('.modal').remove()">关闭</button>
+            </thead>
+            <tbody>
+              ${backups.map(b => `
+                <tr>
+                  <td style="font-family:monospace;font-size:12px">${escapeHtml(b.file)}</td>
+                  <td>${escapeHtml(b.size)}</td>
+                  <td>${escapeHtml(b.time)}</td>
+                  <td style="text-align:center">
+                    <button class="btn small primary" onclick="restoreBackup('${b.file.replace(/'/g, "\\'")}'); this.closest('.modal-overlay').remove()">恢复</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="row" style="margin-top:15px;justify-content:flex-end">
+          <button class="btn" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+        </div>
       </div>
     </div>
   `;
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
   document.body.appendChild(modal);
 }
 async function restoreBackup(filename){
