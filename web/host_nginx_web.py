@@ -4117,7 +4117,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self) -> None:
-        global TOTP_SECRET
+        global TOTP_SECRET, PASSWORD_HASH, PASSWORD
         path = urlparse(self.path).path
         try:
             data = self.read_json()
@@ -4194,7 +4194,6 @@ class Handler(BaseHTTPRequestHandler):
 
         # 账户管理 API
         if path == "/api/account/change-password":
-            global PASSWORD_HASH, PASSWORD
             current = str(data.get("currentPassword", ""))
             new_password = str(data.get("newPassword", ""))
 
