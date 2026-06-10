@@ -1,38 +1,56 @@
 # Host Nginx Manager
 
-Host Nginx Manager 是给“已有宿主 nginx，且不再使用 Nginx Proxy Manager”的 VPS 场景准备的轻量管理工具。
+Host Nginx Manager 是给”已有宿主 nginx，且不再使用 Nginx Proxy Manager”的 VPS 场景准备的轻量管理工具。
 
-它有两部分：
+## ⚠️ 使用前必读
+
+### ✅ 适用场景
+
+本项目适合以下情况：
+
+- ✅ **已安装 Nginx**（系统 nginx，非 Docker）
+- ✅ **主要管理 HTTP/HTTPS 反向代理**
+- ✅ **希望自动管理 Let's Encrypt 证书**
+- ✅ **需要 Web 界面管理多个域名**
+- ✅ **VPS 资源有限**（Python + 系统 nginx，低内存占用）
+- ✅ **从 Nginx Proxy Manager 迁移过来**
+
+### ❌ 不适用场景
+
+以下情况**不建议**使用本项目：
+
+- ❌ **没有安装 Nginx** → 建议先用包管理器安装系统 nginx
+- ❌ **只用 Docker** → 建议使用 Nginx Proxy Manager 或 Traefik
+- ❌ **需要管理 TCP/UDP 流量（stream）** → 本工具只管理 HTTP/HTTPS
+- ❌ **需要复杂的负载均衡和高可用** → 建议使用专业方案
+- ❌ **Windows 服务器** → 本项目仅支持 Linux
+
+### 🔧 本项目管理什么
+
+**管理范围**（会自动创建和修改）：
+- `/etc/nginx/sites-available/vpspm-*.conf` - 站点配置
+- `/etc/nginx/sites-enabled/vpspm-*.conf` - 站点链接
+- Let's Encrypt 证书申请和续期
+
+**不管理范围**（不会修改，手工维护）：
+- `/etc/nginx/nginx.conf` - 全局配置
+- `stream` 块配置
+- TCP/UDP 端口转发
+- Rathole/frp 等隧道工具配置
+- 手工创建的其他 nginx 配置
+
+---
+
+## 组成部分
+
+本工具有两部分：
 
 - `host-nginx-manager.sh`：命令行管理器
 - `web/host_nginx_web.py`：低资源 Web 管理面板
 
-它只管理标准 HTTP/HTTPS 反向代理站点，不会自动改动你当前已经手写的：
+---
 
-- `stream` / `ssl_preread`
-- Rathole SNI 转发
-- 假证书拦截
-- 直接 IP 访问 `444` 拦截
-- 其他手工放在 `/etc/nginx/nginx.conf` 里的全局规则
-
-## 适合的 VPS 架构
-
-从当前 VPS 审计结果看，这台机器适合继续使用宿主 nginx：
-
-- `80` 和 `443` 已由系统 nginx 监听
-- `8443`、`54443` 当前用于 `stream` / Rathole SNI 转发
-- `3001` 当前有 Node 服务监听，适合通过 nginx 子域名反代
-- Certbot 已存在，并已有 `metapi.cni.de5.net` 证书
-- 防火墙当前未启用，安全边界主要依赖云厂商安全组和 nginx 规则
-
-普通 Web/API 服务建议统一挂到 `443`，例如：
-
-- `metapi.cni.de5.net -> 127.0.0.1:3001`
-- `api.example.com -> 127.0.0.1:3002`
-
-特殊的 `stream` / Rathole 入口继续手工维护，不建议交给这个工具管理。
-
-## 安装 Web 管理面板
+## 安装 Web 管理面板（推荐）
 
 推荐安装 Web 面板。它默认监听 `0.0.0.0:8098`，可通过服务器公网 IP 访问。
 
