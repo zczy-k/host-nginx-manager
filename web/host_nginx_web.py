@@ -1096,6 +1096,7 @@ async function confirm2FA(secret){
     return;
   }
   const btn = event.target;
+  const originalText = btn.textContent;
   btn.disabled = true;
   btn.textContent = '验证中...';
   try{
@@ -1104,9 +1105,10 @@ async function confirm2FA(secret){
     document.querySelector('.modal-overlay')?.remove();
     loadAccountInfo();
   }catch(e){
-    showMsg(e.message,'bad');
+    showMsg(e.message || '验证失败','bad');
+  }finally{
     btn.disabled = false;
-    btn.textContent = '确认并启用';
+    btn.textContent = originalText;
   }
 }
 
