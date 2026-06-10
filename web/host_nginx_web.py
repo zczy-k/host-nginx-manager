@@ -1095,13 +1095,18 @@ async function confirm2FA(secret){
     showMsg('请输入6位验证码','bad');
     return;
   }
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '验证中...';
   try{
-    await api('/api/account/2fa/confirm', {method:'POST', body:JSON.stringify({secret, code})});
-    showMsg('双因素认证已启用','ok');
+    const result = await api('/api/account/2fa/confirm', {method:'POST', body:JSON.stringify({secret, code})});
+    showMsg(result.message || '双因素认证已启用','ok');
     document.querySelector('.modal-overlay')?.remove();
     loadAccountInfo();
   }catch(e){
     showMsg(e.message,'bad');
+    btn.disabled = false;
+    btn.textContent = '确认并启用';
   }
 }
 
