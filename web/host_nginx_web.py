@@ -4194,6 +4194,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # 账户管理 API
         if path == "/api/account/change-password":
+            global PASSWORD_HASH, PASSWORD
             current = str(data.get("currentPassword", ""))
             new_password = str(data.get("newPassword", ""))
 
@@ -4230,7 +4231,6 @@ class Handler(BaseHTTPRequestHandler):
                 env_file.write_text("\n".join(new_lines) + "\n")
 
                 # 立即更新内存中的密码变量
-                global PASSWORD_HASH, PASSWORD
                 PASSWORD_HASH = new_hash
                 PASSWORD = ""
 
