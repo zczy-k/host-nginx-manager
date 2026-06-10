@@ -2,7 +2,52 @@
 
 Host Nginx Manager 是给”已有宿主 nginx，且不再使用 Nginx Proxy Manager”的 VPS 场景准备的轻量管理工具。
 
-## ⚠️ 使用前必读
+---
+
+## 🚨 安装前必须满足的条件
+
+在安装本项目之前，请确保您的系统已满足以下**所有**条件：
+
+### 必需组件（缺一不可）
+
+- ✅ **操作系统**：Linux（Debian/Ubuntu/CentOS/RHEL 等）
+- ✅ **Nginx**：已安装系统 nginx（通过 `apt`/`yum` 安装，非 Docker）
+- ✅ **Python 3**：Python 3.7 或更高版本
+- ✅ **Certbot**：Let's Encrypt 证书工具
+- ✅ **Root 权限**：需要 sudo 或 root 用户权限
+
+### 快速检查命令
+
+运行以下命令检查是否满足条件：
+
+```bash
+# 检查 Nginx
+nginx -v
+
+# 检查 Python 3
+python3 --version
+
+# 检查 Certbot
+certbot --version
+
+# 如果缺少组件，请先安装：
+# Debian/Ubuntu:
+sudo apt update && sudo apt install -y nginx python3 certbot python3-certbot-nginx
+
+# CentOS/RHEL:
+sudo yum install -y nginx python3 certbot python3-certbot-nginx
+```
+
+### ⚠️ 如果缺少上述组件
+
+- **没有 Nginx**：先安装 Nginx 后再使用本工具
+- **没有 Python 3**：本工具依赖 Python 3，必须先安装
+- **没有 Certbot**：无法自动申请 SSL 证书
+- **使用 Docker nginx**：本工具不支持，建议使用 Nginx Proxy Manager
+
+---
+
+## ⚠️ 使用场景说明
 
 ### ✅ 适用场景
 
