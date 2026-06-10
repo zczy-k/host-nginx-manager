@@ -743,7 +743,14 @@ function switchToolsTab(tab){
 const CERT_WARN_STATES = new Set(['warn','missing','error','critical']);
 const $ = (s) => document.querySelector(s);
 function showMsg(text, type='info'){
-  $('#message').innerHTML = text ? `<div class="panel"><span class="tag ${type}">${type}</span> ${escapeHtml(text)}</div>` : '';
+  const msgEl = $('#message');
+  if(!text){
+    msgEl.innerHTML = '';
+    return;
+  }
+  msgEl.innerHTML = `<div class="panel"><span class="tag ${type}">${type}</span> ${escapeHtml(text)}</div>`;
+  // 3秒后自动消失
+  setTimeout(() => { msgEl.innerHTML = ''; }, 3000);
 }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 async function api(path, opts={}){ const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); if(res.status===401){ window.location.replace('/login'); throw new Error('未登录'); } const data = await res.json(); if(!res.ok) throw new Error(data.error || data.output || '请求失败'); return data; }
@@ -752,6 +759,7 @@ function switchView(view){
   document.querySelectorAll('.view').forEach(x => x.classList.toggle('active', x.id === view));
   document.querySelectorAll('.nav button').forEach(x => x.classList.toggle('active', x.dataset.view === view));
   $('#title').textContent = VIEW_TITLES[view] || VIEW_TITLES.dashboard;
+  $('#message').innerHTML = ''; // 切换页面时清空通知
 }
 function hasDnsIssue(site){
   return site.dns_status === 'bad' || site.dns_status === 'error';
