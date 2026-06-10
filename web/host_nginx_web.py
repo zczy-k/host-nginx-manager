@@ -1095,7 +1095,8 @@ async function confirm2FA(secret){
     showMsg('请输入6位验证码','bad');
     return;
   }
-  const btn = event.target;
+  const btn = document.querySelector('.modal-overlay .btn.primary');
+  if(!btn) return;
   const originalText = btn.textContent;
   btn.disabled = true;
   btn.textContent = '验证中...';
