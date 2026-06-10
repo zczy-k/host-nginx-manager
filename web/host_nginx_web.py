@@ -41,6 +41,16 @@ CERT_CRITICAL_DAYS = int(os.environ.get("HNG_CERT_CRITICAL_DAYS", "7"))
 PAGE_CSS = r'''
   <style>
     :root { color-scheme: light; --bg:#f6f7f9; --panel:#fff; --line:#e4e7eb; --text:#17202a; --muted:#667085; --blue:#1b64d8; --blue2:#eaf1ff; --red:#c62828; --green:#157347; --amber:#9a6700; --shadow:0 1px 3px rgba(16,24,40,.1), 0 1px 2px rgba(16,24,40,.06); }
+    [data-theme="dark"] { color-scheme: dark; --bg:#18191a; --panel:#242526; --line:#3a3b3c; --text:#e4e6eb; --muted:#b0b3b8; --shadow:0 1px 3px rgba(0,0,0,0.3); }
+    [data-theme="dark"] .shell aside { background:#1c1e21; }
+    [data-theme="dark"] .btn { background:#3a3b3c; color:#e4e6eb; }
+    [data-theme="dark"] .btn:hover { background:#4e4f50; border-color:#5a5b5c; }
+    [data-theme="dark"] .btn.primary { background:var(--blue); color:#fff; }
+    [data-theme="dark"] th { background:#3a3b3c; }
+    [data-theme="dark"] tbody tr:hover { background:#2d2e2f; }
+    [data-theme="dark"] input, [data-theme="dark"] select, [data-theme="dark"] textarea { background:#3a3b3c; color:#e4e6eb; border-color:#5a5b5c; }
+    [data-theme="dark"] .tag { background:#3a3b3c; color:#b0b3b8; }
+    [data-theme="dark"] .notice { background:#2d2e2f; border-color:#5a5b5c; }
     * { box-sizing: border-box; }
     body { margin:0; font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
     button,input,select { font:inherit; }
@@ -202,7 +212,7 @@ APP_HTML = r'''<!doctype html>
   <main>
     <header>
       <div><h1 id="title">概览</h1><div class="muted">管理宿主 nginx 的标准 HTTP/HTTPS 反向代理。</div></div>
-      <div class="row"><button class="btn" id="refreshBtn">刷新</button><button class="btn" id="logoutBtn">退出</button></div>
+      <div class="row"><button class="btn" id="themeBtn" onclick="toggleTheme()">🌙 暗色</button><button class="btn" id="refreshBtn">刷新</button><button class="btn" id="logoutBtn">退出</button></div>
     </header>
     <section id="message"></section>
     <section id="dashboard" class="view active">
@@ -237,6 +247,13 @@ APP_HTML = r'''<!doctype html>
     <section id="sites" class="view">
       <div class="panel">
         <div class="row"><h2>Nginx 站点</h2><span class="spacer"></span><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:14px;"><input type="checkbox" id="showAllSites" onchange="toggleShowAllSites(this.checked)"><span>显示所有站点</span></label><div id="siteSummary" class="muted"></div><button class="btn primary" data-jump="create">新增</button></div>
+        <div id="batchActions" style="display:none;margin:10px 0;padding:10px;background:#e3f2fd;border-radius:4px">
+          <span style="margin-right:10px">已选中 <strong id="batchCount">0</strong> 个站点</span>
+          <button class="btn small primary" onclick="batchEnableHttps()">批量启用HTTPS</button>
+          <button class="btn small" onclick="batchSetAutoRenew(true)">批量开启自动续期</button>
+          <button class="btn small danger" onclick="batchDelete()">批量删除</button>
+          <button class="btn small" onclick="clearBatchSelection()">取消选择</button>
+        </div>
         <div class="toolbar">
           <input id="siteSearch" placeholder="搜索域名、后端、来源">
           <select id="siteFilter">
@@ -258,7 +275,7 @@ APP_HTML = r'''<!doctype html>
           </select>
           <button class="btn" id="siteSearchClear" type="button">清空筛选</button>
         </div>
-        <div style="overflow:auto"><table><thead><tr><th class="domain-col">域名</th><th>监听</th><th class="type-col">类型与状态</th><th>目标/目录</th><th class="source-col">来源</th><th class="actions-col">操作</th></tr></thead><tbody id="siteRows"></tbody></table></div>
+        <div style="overflow:auto"><table><thead><tr><th style="width:30px"><input type="checkbox" id="selectAllSites" onchange="toggleSelectAll(this.checked)"></th><th class="domain-col">域名</th><th>监听</th><th class="type-col">类型与状态</th><th>目标/目录</th><th class="source-col">来源</th><th class="actions-col">操作</th></tr></thead><tbody id="siteRows"></tbody></table></div>
       </div>
     </section>
     <section id="services" class="view">
@@ -605,6 +622,90 @@ let showAllSites = false;
 let certQuery = '';
 let certFilter = 'all';
 const VIEW_TITLES = {dashboard:'概览',issues:'问题',sites:'站点',services:'本机服务',certs:'证书',create:'新增反代',tools:'维护',help:'帮助'};
+
+function toggleTheme(){
+  const currentTheme = document.documentElement.getAttribute('data-theme');
+  const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', newTheme);
+  localStorage.setItem('theme', newTheme);
+  $('#themeBtn').textContent = newTheme === 'dark' ? '☀️ 亮色' : '🌙 暗色';
+}
+
+// 初始化主题
+(function(){
+  const savedTheme = localStorage.getItem('theme') || 'light';
+  document.documentElement.setAttribute('data-theme', savedTheme);
+  if($('#themeBtn')) $('#themeBtn').textContent = savedTheme === 'dark' ? '☀️ 亮色' : '🌙 暗色';
+})();
+
+function updateBatchSelection(){
+  const checkboxes = document.querySelectorAll('.site-checkbox');
+  const checked = Array.from(checkboxes).filter(cb => cb.checked);
+  const count = checked.length;
+  $('#batchCount').textContent = count;
+  $('#batchActions').style.display = count > 0 ? 'block' : 'none';
+  $('#selectAllSites').checked = count > 0 && count === checkboxes.length;
+}
+
+function toggleSelectAll(checked){
+  document.querySelectorAll('.site-checkbox').forEach(cb => cb.checked = checked);
+  updateBatchSelection();
+}
+
+function clearBatchSelection(){
+  document.querySelectorAll('.site-checkbox').forEach(cb => cb.checked = false);
+  updateBatchSelection();
+}
+
+function getSelectedDomains(){
+  return Array.from(document.querySelectorAll('.site-checkbox:checked')).map(cb => cb.dataset.domain);
+}
+
+async function batchEnableHttps(){
+  const domains = getSelectedDomains();
+  if(domains.length === 0) return;
+  if(!confirm(`确认为 ${domains.length} 个站点启用HTTPS？\n\n${domains.join('\n')}`)) return;
+
+  let success = 0;
+  let failed = 0;
+  for(const domain of domains){
+    try {
+      await fetch('/api/sites/enable-ssl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain})});
+      success++;
+    } catch(e) {
+      failed++;
+    }
+  }
+  alert(`批量操作完成\n成功：${success}\n失败：${failed}`);
+  clearBatchSelection();
+  refresh();
+}
+
+async function batchSetAutoRenew(enable){
+  const domains = getSelectedDomains();
+  if(domains.length === 0) return;
+  if(!confirm(`确认为 ${domains.length} 个站点${enable?'开启':'关闭'}自动续期？\n\n${domains.join('\n')}`)) return;
+
+  for(const domain of domains){
+    await fetch('/api/certs/set-auto-renew', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain, enable})}).catch(()=>{});
+  }
+  alert('批量操作完成');
+  clearBatchSelection();
+  refresh();
+}
+
+async function batchDelete(){
+  const domains = getSelectedDomains();
+  if(domains.length === 0) return;
+  if(!confirm(`⚠️ 危险操作：批量删除 ${domains.length} 个站点\n\n${domains.join('\n')}\n\n此操作不可撤销，是否继续？`)) return;
+
+  for(const domain of domains){
+    await fetch('/api/sites/remove', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain})}).catch(()=>{});
+  }
+  alert('批量删除完成');
+  clearBatchSelection();
+  refresh();
+}
 
 function switchToolsTab(tab){
   if(tab === 'basic'){
@@ -1053,6 +1154,7 @@ function render(){
     const kindInfo = s.kind || 'Nginx 服务';
 
     let actions = '<span class="muted">只读</span>';
+    const checkbox = s.managed ? `<input type="checkbox" class="site-checkbox" data-domain="${actionDomain}" onchange="updateBatchSelection()">` : '';
     if (s.managed) {
       actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small" onclick="renameSite('${actionDomain}')">重命名</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`;
     } else if (s.can_manage) {
@@ -1062,6 +1164,7 @@ function render(){
     }
 
     return `<tr>
+      <td>${checkbox}</td>
       <td class="domain-col"><strong>${escapeHtml(domain)}</strong><div class="muted">${escapeHtml(names)}</div></td>
       <td>${escapeHtml(listen)}</td>
       <td class="type-col">${statusTags}<div class="muted" style="margin-top:6px;">${escapeHtml(kindInfo)}</div></td>
