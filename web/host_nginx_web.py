@@ -4184,41 +4184,59 @@ class Handler(BaseHTTPRequestHandler):
             code = str(data.get("code", ""))
 
             if not verify_totp_code(secret, code):
-                self.send_json({"error": "验证码错误"}, 403)
+                self.send_json({"error": "验证码错误，请检查时间同步"}, 403)
                 return
 
             # 保存到配置文件
             env_file = pathlib.Path("/etc/host-nginx-manager/web.env")
-            if env_file.exists():
-                lines = env_file.read_text().splitlines()
-                new_lines = []
-                updated = False
-                for line in lines:
-                    if line.startswith("HNG_WEB_TOTP_SECRET="):
+            try:
+                if env_file.exists():
+                    lines = env_file.read_text().splitlines()
+                    new_lines = []
+                    updated = False
+                    for line in lines:
+                        if line.startswith("HNG_WEB_TOTP_SECRET="):
+                            new_lines.append(f"HNG_WEB_TOTP_SECRET={secret}")
+                            updated = True
+                        else:
+                            new_lines.append(line)
+                    if not updated:
                         new_lines.append(f"HNG_WEB_TOTP_SECRET={secret}")
-                        updated = True
-                    else:
-                        new_lines.append(line)
-                if not updated:
-                    new_lines.append(f"HNG_WEB_TOTP_SECRET={secret}")
-                env_file.write_text("\n".join(new_lines) + "\n")
+                    env_file.write_text("\n".join(new_lines) + "\n")
 
-                self.send_json({"message": "双因素认证已启用，需要重启服务生效"})
-            else:
-                self.send_json({"error": "配置文件不存在"}, 500)
+                    # 运行时更新全局变量
+                    global TOTP_SECRET
+                    TOTP_SECRET = secret
+
+                    self.send_json({"message": "双因素认证已启用"})
+                else:
+                    # 无配置文件时，仅内存存储（重启后失效）
+                    TOTP_SECRET = secret
+                    self.send_json({"message": "双因素认证已启用（仅本次会话有效，重启后失效）"})
+            except Exception as e:
+                # 权限错误时降级到内存存储
+                TOTP_SECRET = secret
+                self.send_json({"message": f"双因素认证已启用（仅本次会话有效）\n提示: {str(e)}"})
             return
 
         if path == "/api/account/2fa/disable":
             # 删除 2FA 配置
             env_file = pathlib.Path("/etc/host-nginx-manager/web.env")
-            if env_file.exists():
-                lines = env_file.read_text().splitlines()
-                new_lines = [line for line in lines if not line.startswith("HNG_WEB_TOTP_SECRET=")]
-                env_file.write_text("\n".join(new_lines) + "\n")
+            try:
+                if env_file.exists():
+                    lines = env_file.read_text().splitlines()
+                    new_lines = [line for line in lines if not line.startswith("HNG_WEB_TOTP_SECRET=")]
+                    env_file.write_text("\n".join(new_lines) + "\n")
 
-                self.send_json({"message": "双因素认证已禁用，需要重启服务生效"})
-            else:
-                self.send_json({"error": "配置文件不存在"}, 500)
+                # 运行时清除
+                global TOTP_SECRET
+                TOTP_SECRET = ""
+
+                self.send_json({"message": "双因素认证已禁用"})
+            except Exception as e:
+                # 权限错误时仅清除内存
+                TOTP_SECRET = ""
+                self.send_json({"message": f"双因素认证已禁用（仅本次会话）\n提示: {str(e)}"})
             return
 
         routes = {
