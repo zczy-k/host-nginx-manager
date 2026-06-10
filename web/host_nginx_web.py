@@ -1764,7 +1764,6 @@ $('#reloadBtn').onclick = ()=>action('/api/nginx/reload',{}).catch(e=>showMsg(e.
 $('#problemJumpBtn').onclick = ()=>focusProblemSites();
 
 // 更新主题按钮文本
-const savedTheme = localStorage.getItem('theme') || 'light';
 if($('#themeBtn')) $('#themeBtn').textContent = savedTheme === 'dark' ? '☀️ 亮色' : '🌙 暗色';
 
 $('#siteSearch').addEventListener('input', e => { siteQuery = e.target.value; render(); });
