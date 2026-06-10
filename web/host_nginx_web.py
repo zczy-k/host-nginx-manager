@@ -573,9 +573,24 @@ APP_HTML = r'''<!doctype html>
         <details open>
           <summary>🔑 修改密码</summary>
           <form id="changePasswordForm" style="max-width:500px;margin-top:15px">
-            <label>当前密码<input id="currentPassword" type="password" required autocomplete="current-password"></label>
-            <label>新密码<input id="newPassword" type="password" required autocomplete="new-password" minlength="8"></label>
-            <label>确认新密码<input id="confirmPassword" type="password" required autocomplete="new-password"></label>
+            <label>当前密码
+              <div style="position:relative">
+                <input id="currentPassword" type="password" required autocomplete="current-password" style="padding-right:40px">
+                <button type="button" onclick="togglePassword('currentPassword')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);border:none;background:none;cursor:pointer;padding:4px;color:var(--muted)">👁️</button>
+              </div>
+            </label>
+            <label>新密码
+              <div style="position:relative">
+                <input id="newPassword" type="password" required autocomplete="new-password" minlength="8" style="padding-right:40px">
+                <button type="button" onclick="togglePassword('newPassword')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);border:none;background:none;cursor:pointer;padding:4px;color:var(--muted)">👁️</button>
+              </div>
+            </label>
+            <label>确认新密码
+              <div style="position:relative">
+                <input id="confirmPassword" type="password" required autocomplete="new-password" style="padding-right:40px">
+                <button type="button" onclick="togglePassword('confirmPassword')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);border:none;background:none;cursor:pointer;padding:4px;color:var(--muted)">👁️</button>
+              </div>
+            </label>
             <div class="notice" style="margin:10px 0;font-size:13px">
               <strong>密码要求：</strong>
               <ul style="margin:5px 0 0 20px">
@@ -961,6 +976,18 @@ function showMsg(text, type='info'){
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 async function api(path, opts={}){ const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); if(res.status===401){ window.location.replace('/login'); throw new Error('未登录'); } const data = await res.json(); if(!res.ok) throw new Error(data.error || data.output || '请求失败'); return data; }
 async function load(){ state = await api('/api/status'); render(); }
+
+function togglePassword(inputId){
+  const input = $('#' + inputId);
+  const btn = input.nextElementSibling;
+  if(input.type === 'password'){
+    input.type = 'text';
+    btn.textContent = '🙈';
+  }else{
+    input.type = 'password';
+    btn.textContent = '👁️';
+  }
+}
 
 function checkPasswordStrength(password){
   const checks = {
