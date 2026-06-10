@@ -3968,6 +3968,7 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self) -> None:
+        global TOTP_SECRET
         path = urlparse(self.path).path
         if path == "/login":
             if self.authenticated():
@@ -4057,6 +4058,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self) -> None:
+        global TOTP_SECRET
         path = urlparse(self.path).path
         try:
             data = self.read_json()
@@ -4065,7 +4067,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/login":
-            global TOTP_SECRET
             client_ip = self.client_address[0]
 
             # 检查限流
@@ -4181,7 +4182,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/account/2fa/confirm":
-            global TOTP_SECRET
             secret = str(data.get("secret", ""))
             code = str(data.get("code", ""))
 
@@ -4221,7 +4221,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/account/2fa/disable":
-            global TOTP_SECRET
             # 删除 2FA 配置
             env_file = pathlib.Path("/etc/host-nginx-manager/web.env")
             try:
