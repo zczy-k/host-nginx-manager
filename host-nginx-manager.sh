@@ -1339,7 +1339,7 @@ cmd_health_check() {
 
     for state_file in "${state_files[@]}"; do
         local domain=$(basename "$state_file" .env)
-        ((total++))
+        total=$((total + 1))
 
         echo ""
         echo "━━━ [$total] $domain ━━━"
@@ -1348,11 +1348,11 @@ cmd_health_check() {
         echo "$status"
 
         if echo "$status" | grep -q "✓ 所有检查通过"; then
-            ((healthy++))
+            healthy=$((healthy + 1))
         elif echo "$status" | grep -q "✗"; then
-            ((errors++))
+            errors=$((errors + 1))
         else
-            ((warnings++))
+            warnings=$((warnings + 1))
         fi
     done
 
