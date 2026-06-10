@@ -31,12 +31,58 @@ STATE_DIR = pathlib.Path(os.environ.get("HNG_STATE_DIR", "/etc/nginx/vps-proxy-m
 BIND = os.environ.get("HNG_WEB_BIND", "0.0.0.0")
 PORT = int(os.environ.get("HNG_WEB_PORT", "8098"))
 PASSWORD = os.environ.get("HNG_WEB_PASSWORD", "")
+PASSWORD_HASH = os.environ.get("HNG_WEB_PASSWORD_HASH", "")  # 优先使用 hash
 SECRET = os.environ.get("HNG_WEB_SECRET", "") or secrets.token_urlsafe(32)
 COOKIE_NAME = "hng_session"
-SESSION_TTL = 12 * 60 * 60
+SESSION_TTL = 30 * 60  # 30分钟超时
+SESSION_STORE = {}  # {token: {"expires": timestamp, "last_active": timestamp}}
+LOGIN_ATTEMPTS = {}  # {ip: {"count": int, "locked_until": timestamp}}
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z0-9.-]+$")
 CERT_WARN_DAYS = int(os.environ.get("HNG_CERT_WARN_DAYS", "30"))
 CERT_CRITICAL_DAYS = int(os.environ.get("HNG_CERT_CRITICAL_DAYS", "7"))
+
+def hash_password(password: str) -> str:
+    """使用 PBKDF2-SHA256 哈希密码"""
+    salt = secrets.token_bytes(32)
+    pwdhash = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000)
+    return base64.b64encode(salt + pwdhash).decode('ascii')
+
+def verify_password(password: str, hash_str: str) -> bool:
+    """验证密码"""
+    try:
+        decoded = base64.b64decode(hash_str)
+        salt = decoded[:32]
+        stored_hash = decoded[32:]
+        pwdhash = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000)
+        return hmac.compare_digest(pwdhash, stored_hash)
+    except Exception:
+        return False
+
+def check_login_attempts(ip: str) -> bool:
+    """检查登录限流"""
+    now = time.time()
+    if ip in LOGIN_ATTEMPTS:
+        attempt = LOGIN_ATTEMPTS[ip]
+        if attempt.get("locked_until", 0) > now:
+            return False  # 仍在锁定期
+        if attempt.get("count", 0) >= 5:
+            LOGIN_ATTEMPTS[ip] = {"count": 0, "locked_until": now + 300}  # 锁定5分钟
+            return False
+    return True
+
+def record_failed_login(ip: str):
+    """记录登录失败"""
+    if ip not in LOGIN_ATTEMPTS:
+        LOGIN_ATTEMPTS[ip] = {"count": 0}
+    LOGIN_ATTEMPTS[ip]["count"] = LOGIN_ATTEMPTS[ip].get("count", 0) + 1
+
+def clean_expired_sessions():
+    """清理过期 session"""
+    now = time.time()
+    expired = [token for token, data in SESSION_STORE.items() if data["expires"] < now]
+    for token in expired:
+        del SESSION_STORE[token]
+
 
 PAGE_CSS = r'''
   <style>
@@ -2044,10 +2090,6 @@ load().catch(e=>showMsg(e.message,'bad'));
 </html>'''
 
 
-def sign_session(ts: str) -> str:
-    return hmac.new(SECRET.encode(), ts.encode(), hashlib.sha256).hexdigest()
-
-
 def parse_state_file(path: pathlib.Path) -> dict[str, str]:
     data: dict[str, str] = {}
     try:
@@ -3584,17 +3626,23 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(raw.decode("utf-8") or "{}")
 
     def authenticated(self) -> bool:
+        clean_expired_sessions()
         cookie = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
         morsel = cookie.get(COOKIE_NAME)
         if not morsel:
             return False
-        try:
-            ts, sig = morsel.value.split(":", 1)
-            if time.time() - int(ts) > SESSION_TTL:
-                return False
-            return hmac.compare_digest(sig, sign_session(ts))
-        except Exception:
+        token = morsel.value
+        if token not in SESSION_STORE:
             return False
+        session = SESSION_STORE[token]
+        now = time.time()
+        if session["expires"] < now:
+            del SESSION_STORE[token]
+            return False
+        # 更新最后活动时间，延长 session
+        session["last_active"] = now
+        session["expires"] = now + SESSION_TTL
+        return True
 
     def require_auth(self) -> bool:
         if self.authenticated():
@@ -3692,18 +3740,55 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/login":
-            if not PASSWORD:
-                self.send_json({"error": "服务未设置 HNG_WEB_PASSWORD"}, 500)
+            client_ip = self.client_address[0]
+
+            # 检查限流
+            if not check_login_attempts(client_ip):
+                self.send_json({"error": "登录失败次数过多，请5分钟后再试"}, 429)
                 return
-            if str(data.get("password", "")) != PASSWORD:
+
+            # 验证密码
+            password_input = str(data.get("password", ""))
+            valid = False
+
+            if PASSWORD_HASH:
+                # 优先使用 hash 验证
+                valid = verify_password(password_input, PASSWORD_HASH)
+            elif PASSWORD:
+                # 兼容明文密码（向后兼容）
+                valid = hmac.compare_digest(password_input, PASSWORD)
+            else:
+                self.send_json({"error": "服务未设置密码 (HNG_WEB_PASSWORD_HASH 或 HNG_WEB_PASSWORD)"}, 500)
+                return
+
+            if not valid:
+                record_failed_login(client_ip)
                 self.send_json({"error": "密码错误"}, 403)
                 return
-            ts = str(int(time.time()))
-            cookie = f"{COOKIE_NAME}={ts}:{sign_session(ts)}; HttpOnly; SameSite=Strict; Path=/"
+
+            # 登录成功，创建 session
+            token = secrets.token_urlsafe(32)
+            now = time.time()
+            SESSION_STORE[token] = {
+                "expires": now + SESSION_TTL,
+                "last_active": now,
+                "ip": client_ip
+            }
+
+            # 清除登录失败记录
+            if client_ip in LOGIN_ATTEMPTS:
+                del LOGIN_ATTEMPTS[client_ip]
+
+            cookie = f"{COOKIE_NAME}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
             self.send_json({"ok": True}, headers={"Set-Cookie": cookie})
             return
 
         if path == "/api/logout":
+            # 清除 session
+            cookie = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
+            morsel = cookie.get(COOKIE_NAME)
+            if morsel and morsel.value in SESSION_STORE:
+                del SESSION_STORE[morsel.value]
             self.send_json({"ok": True}, headers={"Set-Cookie": f"{COOKIE_NAME}=; Max-Age=0; Path=/"})
             return
 
@@ -3881,10 +3966,38 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    if not PASSWORD:
-        print("警告：未设置 HNG_WEB_PASSWORD，登录将不可用。")
+    import sys
+
+    # 支持生成密码 hash
+    if len(sys.argv) > 1 and sys.argv[1] == "hash-password":
+        password = input("输入密码: ").strip()
+        if not password:
+            print("密码不能为空")
+            sys.exit(1)
+        hash_str = hash_password(password)
+        print(f"\n密码 hash 已生成，设置环境变量：")
+        print(f'export HNG_WEB_PASSWORD_HASH="{hash_str}"')
+        sys.exit(0)
+
+    # 检查密码配置
+    if not PASSWORD_HASH and not PASSWORD:
+        print("错误：未设置密码！")
+        print("方式1（推荐）：生成 hash 密码")
+        print("  python3 web/host_nginx_web.py hash-password")
+        print("方式2：使用明文密码（不推荐）")
+        print("  export HNG_WEB_PASSWORD='your_password'")
+        sys.exit(1)
+
+    if PASSWORD and not PASSWORD_HASH:
+        print("⚠️  警告：使用明文密码，建议改用 hash 密码")
+        print("   运行: python3 web/host_nginx_web.py hash-password")
+
+    print(f"{APP_TITLE} 启动")
+    print(f"  监听: http://{BIND}:{PORT}")
+    print(f"  Session 超时: {SESSION_TTL // 60} 分钟")
+    print(f"  登录限流: 5次失败锁定5分钟")
+
     httpd = ThreadingHTTPServer((BIND, PORT), Handler)
-    print(f"{APP_TITLE} listening on http://{BIND}:{PORT}")
     httpd.serve_forever()
 
 
