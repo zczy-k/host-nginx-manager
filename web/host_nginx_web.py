@@ -4180,6 +4180,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/account/2fa/confirm":
+            global TOTP_SECRET
             secret = str(data.get("secret", ""))
             code = str(data.get("code", ""))
 
@@ -4205,7 +4206,6 @@ class Handler(BaseHTTPRequestHandler):
                     env_file.write_text("\n".join(new_lines) + "\n")
 
                     # 运行时更新全局变量
-                    global TOTP_SECRET
                     TOTP_SECRET = secret
 
                     self.send_json({"message": "双因素认证已启用"})
@@ -4220,6 +4220,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/account/2fa/disable":
+            global TOTP_SECRET
             # 删除 2FA 配置
             env_file = pathlib.Path("/etc/host-nginx-manager/web.env")
             try:
@@ -4229,7 +4230,6 @@ class Handler(BaseHTTPRequestHandler):
                     env_file.write_text("\n".join(new_lines) + "\n")
 
                 # 运行时清除
-                global TOTP_SECRET
                 TOTP_SECRET = ""
 
                 self.send_json({"message": "双因素认证已禁用"})
