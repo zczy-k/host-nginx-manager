@@ -41,6 +41,7 @@ LOGIN_ATTEMPTS = {}  # {ip: {"count": int, "locked_until": timestamp}}
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z0-9.-]+$")
 CERT_WARN_DAYS = int(os.environ.get("HNG_CERT_WARN_DAYS", "30"))
 CERT_CRITICAL_DAYS = int(os.environ.get("HNG_CERT_CRITICAL_DAYS", "7"))
+COOKIE_SECURE = os.environ.get("HNG_COOKIE_SECURE", "false").lower() == "true"  # HTTPS 环境启用
 
 def generate_totp_secret() -> str:
     """生成 TOTP 密钥（Base32）"""
@@ -143,6 +144,44 @@ def validate_password_strength(password: str) -> tuple[bool, str]:
         return False, "密码不能包含4位或更多连续字母"
 
     return True, ""
+
+def validate_domain(domain: str) -> bool:
+    """验证域名格式，防止命令注入"""
+    if not domain or len(domain) > 253:
+        return False
+    # 只允许字母、数字、点、连字符、通配符
+    import re
+    pattern = r'^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$'
+    return bool(re.match(pattern, domain.lower()))
+
+def validate_email(email: str) -> bool:
+    """验证邮箱格式"""
+    if not email or len(email) > 254:
+        return False
+    import re
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email))
+
+def validate_nginx_path(path: str) -> bool:
+    """验证 nginx 配置文件路径，防止路径遍历"""
+    if not path:
+        return False
+    try:
+        abs_path = pathlib.Path(path).resolve()
+        allowed_base = pathlib.Path("/etc/nginx").resolve()
+        abs_path.relative_to(allowed_base)
+        return abs_path.is_file()
+    except (ValueError, OSError):
+        return False
+
+def validate_upstream(upstream: str) -> bool:
+    """验证后端地址格式"""
+    if not upstream or len(upstream) > 256:
+        return False
+    import re
+    # 允许 IP:PORT 或 HOSTNAME:PORT
+    pattern = r'^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.?)+:\d{1,5}$|^(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}$'
+    return bool(re.match(pattern, upstream.lower()))
 
 def check_login_attempts(ip: str) -> bool:
     """检查登录限流"""
@@ -4234,7 +4273,8 @@ class Handler(BaseHTTPRequestHandler):
             if client_ip in LOGIN_ATTEMPTS:
                 del LOGIN_ATTEMPTS[client_ip]
 
-            cookie = f"{COOKIE_NAME}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
+            secure_flag = "; Secure" if COOKIE_SECURE else ""
+            cookie = f"{COOKIE_NAME}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}{secure_flag}"
             self.send_json({"ok": True}, headers={"Set-Cookie": cookie})
             return
 
@@ -4410,12 +4450,20 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/health/check":
-            check_domain = str(data.get("domain", "")).strip()
+            check_domain = str(data.get("domain", "")).strip().lower()
+            if check_domain and not validate_domain(check_domain):
+                self.send_json({"error": "域名格式不合法"}, 400)
+                return
             result = health_check(check_domain)
             self.send_json({"message": "健康检查完成", **result}, 200 if result["code"] == 0 else 500)
             return
 
-        domain = str(data.get("domain", "")).strip()
+        # 验证 domain 参数
+        domain = str(data.get("domain", "")).strip().lower()
+        if not validate_domain(domain):
+            self.send_json({"error": "域名格式不合法"}, 400)
+            return
+
         if path == "/api/sites/take-over":
             result = take_over_site(domain, str(data.get("source", "")).strip())
             self.send_json({"message": "站点已纳入管理", **result}, 200 if result["code"] == 0 else 400)
@@ -4431,11 +4479,22 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/sites/add":
-            args = [MANAGER_BIN, "add", domain, str(data.get("upstream", "")).strip(), "--upstream-scheme", str(data.get("scheme", "http"))]
+            upstream = str(data.get("upstream", "")).strip()
+            email = str(data.get("email", "")).strip()
+
+            if not validate_upstream(upstream):
+                self.send_json({"error": "后端地址格式不合法"}, 400)
+                return
+
+            if email and not validate_email(email):
+                self.send_json({"error": "邮箱格式不合法"}, 400)
+                return
+
+            args = [MANAGER_BIN, "add", domain, upstream, "--upstream-scheme", str(data.get("scheme", "http"))]
             if not data.get("ssl", True):
                 args.append("--no-ssl")
-            if data.get("email"):
-                args += ["--email", str(data.get("email"))]
+            if email:
+                args += ["--email", email]
             if data.get("body"):
                 args += ["--client-max-body-size", str(data.get("body"))]
             if data.get("readTimeout"):
@@ -4447,9 +4506,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/sites/enable-ssl":
+            email = str(data.get("email", "")).strip()
+            if email and not validate_email(email):
+                self.send_json({"error": "邮箱格式不合法"}, 400)
+                return
+
             args = [MANAGER_BIN, "enable-ssl", domain]
-            if data.get("email"):
-                args += ["--email", str(data.get("email"))]
+            if email:
+                args += ["--email", email]
             result = run_cmd(args, timeout=180)
             self.send_json({"message": "HTTPS 已启用", **result}, 200 if result["code"] == 0 else 500)
             return
@@ -4466,20 +4530,26 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/sites/rename":
-            new_domain = str(data.get("new_domain", "")).strip()
+            new_domain = str(data.get("new_domain", "")).strip().lower()
             new_upstream = str(data.get("new_upstream", "")).strip()
             delete_old_cert = data.get("delete_old_cert", False)
-            if not new_domain:
-                self.send_json({"error": "缺少new_domain参数"}, 400)
+
+            if not validate_domain(new_domain):
+                self.send_json({"error": "新域名格式不合法"}, 400)
                 return
+
+            if new_upstream and not validate_upstream(new_upstream):
+                self.send_json({"error": "后端地址格式不合法"}, 400)
+                return
+
             result = rename_site(domain, new_domain, new_upstream, delete_old_cert)
             self.send_json({"message": "站点已重命名", **result}, 200 if result["code"] == 0 else 500)
             return
 
         if path == "/api/nginx/comment-out":
             source = str(data.get("source", "")).strip()
-            if not source:
-                self.send_json({"error": "缺少source参数"}, 400)
+            if not validate_nginx_path(source):
+                self.send_json({"error": "路径不合法或文件不存在"}, 400)
                 return
             result = comment_out_nginx_config(domain, source)
             self.send_json({"message": "已注释nginx配置", **result}, 200 if result["code"] == 0 else 400)
