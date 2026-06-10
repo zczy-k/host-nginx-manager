@@ -3995,6 +3995,14 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/api/account/info":
+            if not self.require_auth():
+                return
+            self.send_json({
+                "twoFactorEnabled": bool(TOTP_SECRET)
+            })
+            return
+
         if path.startswith("/api/certs/detail"):
             if not self.require_auth():
                 return
@@ -4124,12 +4132,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # 账户管理 API
-        if path == "/api/account/info":
-            self.send_json({
-                "twoFactorEnabled": bool(TOTP_SECRET)
-            })
-            return
-
         if path == "/api/account/change-password":
             current = str(data.get("currentPassword", ""))
             new_password = str(data.get("newPassword", ""))
