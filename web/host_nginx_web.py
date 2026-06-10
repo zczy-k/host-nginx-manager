@@ -315,6 +315,16 @@ APP_HTML = r'''<!doctype html>
     <section id="create" class="view">
       <div class="panel">
         <h2>新增标准反向代理</h2>
+        <div style="margin-bottom:20px">
+          <label style="display:block;margin-bottom:8px;font-weight:500">快速配置模板</label>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
+            <button type="button" class="btn" onclick="applyTemplate('api')">🔌 API 服务</button>
+            <button type="button" class="btn" onclick="applyTemplate('web')">🌐 静态网站</button>
+            <button type="button" class="btn" onclick="applyTemplate('websocket')">💬 WebSocket</button>
+            <button type="button" class="btn" onclick="applyTemplate('upload')">📤 文件上传</button>
+            <button type="button" class="btn" onclick="applyTemplate('custom')">⚙️ 自定义</button>
+          </div>
+        </div>
         <form id="createForm">
           <div class="form-grid">
             <label>域名<input name="domain" placeholder="api.example.com" required></label>
@@ -323,6 +333,7 @@ APP_HTML = r'''<!doctype html>
             <label>邮箱<input name="email" placeholder="you@example.com"></label>
             <label>上传大小<input name="body" value="64m"></label>
             <label>读取超时<input name="readTimeout" value="300s"></label>
+            <label>发送超时<input name="sendTimeout" value="300s"></label>
           </div>
           <label class="check"><input name="ssl" type="checkbox" checked> 立即申请证书并启用 HTTPS</label>
           <label class="check"><input name="backendInsecure" type="checkbox"> 后端是自签 HTTPS，关闭后端证书校验</label>
@@ -1569,6 +1580,56 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// 配置模板
+const templates = {
+  api: {
+    name: 'API 服务',
+    body: '64m',
+    readTimeout: '300s',
+    sendTimeout: '300s',
+    note: '适合 RESTful API、GraphQL 等后端服务'
+  },
+  web: {
+    name: '静态网站',
+    body: '10m',
+    readTimeout: '60s',
+    sendTimeout: '60s',
+    note: '适合 React、Vue、纯HTML等静态资源'
+  },
+  websocket: {
+    name: 'WebSocket 服务',
+    body: '64m',
+    readTimeout: '3600s',
+    sendTimeout: '3600s',
+    note: '适合实时通信、聊天室、游戏服务器'
+  },
+  upload: {
+    name: '文件上传服务',
+    body: '512m',
+    readTimeout: '600s',
+    sendTimeout: '600s',
+    note: '适合图片、视频上传等大文件场景'
+  },
+  custom: {
+    name: '自定义',
+    body: '64m',
+    readTimeout: '300s',
+    sendTimeout: '300s',
+    note: '手动配置所有参数'
+  }
+};
+
+function applyTemplate(type){
+  const t = templates[type];
+  if(!t) return;
+
+  $('#createForm [name="body"]').value = t.body;
+  $('#createForm [name="readTimeout"]').value = t.readTimeout;
+  $('#createForm [name="sendTimeout"]').value = t.sendTimeout;
+
+  showMsg(`已应用 ${t.name} 模板：${t.note}`, 'ok');
+}
+
 async function commentOutConfig(domain, source){ if(confirm(`确认注释掉这个nginx配置？\n\n域名: ${domain}\n配置文件: ${source}\n\n操作将：\n1. 注释掉该server块\n2. 创建备份文件\n3. 重载nginx\n\n该配置不会被删除，只是被注释。`)) await action('/api/nginx/comment-out',{domain, source}); }
 async function takeOverSite(domain, source){
   if(confirm(`🎯 确认纳入管理？
@@ -1710,7 +1771,7 @@ $('#siteSearchClear').onclick = () => { siteQuery = ''; siteFilter = 'all'; $('#
 $('#certSearch').addEventListener('input', e => { certQuery = e.target.value; render(); });
 $('#certFilter').addEventListener('change', e => { certFilter = e.target.value; render(); });
 $('#certSearchClear').onclick = () => { certQuery = ''; certFilter = 'all'; $('#certSearch').value = ''; $('#certFilter').value = 'all'; render(); };
-$('#createForm').addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(e.target); const body = {domain:f.get('domain'), upstream:f.get('upstream'), scheme:f.get('scheme'), email:f.get('email'), ssl:f.has('ssl'), body:f.get('body'), readTimeout:f.get('readTimeout'), backendInsecure:f.has('backendInsecure')}; try { await action('/api/sites/add', body); e.target.reset(); } catch(err){ showMsg(err.message,'bad'); $('#output').textContent = err.message; } });
+$('#createForm').addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(e.target); const body = {domain:f.get('domain'), upstream:f.get('upstream'), scheme:f.get('scheme'), email:f.get('email'), ssl:f.has('ssl'), body:f.get('body'), readTimeout:f.get('readTimeout'), sendTimeout:f.get('sendTimeout'), backendInsecure:f.has('backendInsecure')}; try { await action('/api/sites/add', body); e.target.reset(); } catch(err){ showMsg(err.message,'bad'); $('#output').textContent = err.message; } });
 document.querySelectorAll('.nav button,[data-jump]').forEach(b => b.onclick = () => switchView(b.dataset.view||b.dataset.jump));
 document.getElementById('certModal').onclick = (e) => { if(e.target.id === 'certModal') closeCertModal(); };
 
