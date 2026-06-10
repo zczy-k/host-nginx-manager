@@ -1228,8 +1228,11 @@ cmd_health_check() {
     fi
 
     # 检查所有站点
+    shopt -s nullglob
     local state_files=("$SITE_STATE_DIR"/*.env)
-    if [[ ! -e "${state_files[0]}" ]]; then
+    shopt -u nullglob
+
+    if [[ ${#state_files[@]} -eq 0 ]]; then
         info "暂无受管站点"
         return 0
     fi
