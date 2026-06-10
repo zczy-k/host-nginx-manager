@@ -649,15 +649,13 @@ function toggleTheme(){
   const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', newTheme);
   localStorage.setItem('theme', newTheme);
-  $('#themeBtn').textContent = newTheme === 'dark' ? '☀️ 亮色' : '🌙 暗色';
+  const btn = document.querySelector('#themeBtn');
+  if(btn) btn.textContent = newTheme === 'dark' ? '☀️ 亮色' : '🌙 暗色';
 }
 
-// 初始化主题
-(function(){
-  const savedTheme = localStorage.getItem('theme') || 'light';
-  document.documentElement.setAttribute('data-theme', savedTheme);
-  if($('#themeBtn')) $('#themeBtn').textContent = savedTheme === 'dark' ? '☀️ 亮色' : '🌙 暗色';
-})();
+// 初始化主题（在 DOM 加载前）
+const savedTheme = localStorage.getItem('theme') || 'light';
+document.documentElement.setAttribute('data-theme', savedTheme);
 
 function updateBatchSelection(){
   const checkboxes = document.querySelectorAll('.site-checkbox');
@@ -1764,6 +1762,11 @@ $('#refreshBtn').onclick = ()=>load().catch(e=>showMsg(e.message,'bad'));
 $('#testBtn').onclick = ()=>action('/api/nginx/test',{}).catch(e=>showMsg(e.message,'bad'));
 $('#reloadBtn').onclick = ()=>action('/api/nginx/reload',{}).catch(e=>showMsg(e.message,'bad'));
 $('#problemJumpBtn').onclick = ()=>focusProblemSites();
+
+// 更新主题按钮文本
+const savedTheme = localStorage.getItem('theme') || 'light';
+if($('#themeBtn')) $('#themeBtn').textContent = savedTheme === 'dark' ? '☀️ 亮色' : '🌙 暗色';
+
 $('#siteSearch').addEventListener('input', e => { siteQuery = e.target.value; render(); });
 $('#siteFilter').addEventListener('change', e => { siteFilter = e.target.value; render(); });
 $('#siteSort').addEventListener('change', () => { render(); });
