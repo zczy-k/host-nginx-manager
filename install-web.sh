@@ -91,8 +91,9 @@ show_menu() {
         echo "请选择操作："
         echo "  1) 升级到最新版本（保留配置和密码）"
         echo "  2) 重置登录密码"
-        echo "  3) 全新安装（重置所有配置）"
-        echo "  4) 退出"
+        echo "  3) 切换 Cookie Secure 模式（HTTPS/HTTP）"
+        echo "  4) 全新安装（重置所有配置）"
+        echo "  5) 退出"
         echo ""
     else
         section "未检测到已安装的版本"
@@ -236,6 +237,91 @@ do_reset_password() {
         fi
     else
         warn "密码重置已取消或失败"
+    fi
+}
+
+do_toggle_cookie_secure() {
+    section "切换 Cookie Secure 模式"
+
+    if [[ ! -f "$ENV_FILE" ]]; then
+        die "未找到配置文件，请先安装"
+    fi
+
+    # 读取当前配置
+    # shellcheck disable=SC1090
+    . "$ENV_FILE" 2>/dev/null || true
+    local current_mode="${HNG_COOKIE_SECURE:-false}"
+
+    echo ""
+    echo "════════════════════════════════════════════════"
+    echo "🔒 Cookie Secure 模式说明"
+    echo "════════════════════════════════════════════════"
+    echo ""
+    echo "当前状态: $(if [[ "$current_mode" == "true" ]]; then echo "✅ 已启用（仅 HTTPS）"; else echo "⚠️  未启用（HTTP/HTTPS 均可）"; fi)"
+    echo ""
+    echo "Cookie Secure 的作用："
+    echo "  • 启用后，Cookie 只通过 HTTPS 传输"
+    echo "  • 防止中间人攻击，提升会话安全性"
+    echo ""
+    echo "何时启用："
+    echo "  ✅ 通过 HTTPS 反向代理访问（推荐）"
+    echo "  ✅ 使用域名 + SSL 证书访问"
+    echo ""
+    echo "何时禁用："
+    echo "  ⚠️  直接通过 HTTP 访问（如 http://IP:8098）"
+    echo "  ⚠️  还未配置 HTTPS 反向代理"
+    echo ""
+    echo "════════════════════════════════════════════════"
+    echo ""
+
+    if [[ "$current_mode" == "true" ]]; then
+        printf "是否禁用 Cookie Secure（切换为 HTTP 可访问）？[y/N]: "
+    else
+        printf "是否启用 Cookie Secure（切换为仅 HTTPS）？[y/N]: "
+    fi
+
+    local choice=""
+    read -r choice <"${TTY_IN:-/dev/stdin}" || choice="n"
+
+    if [[ ! "$choice" =~ ^[Yy]$ ]]; then
+        echo "操作已取消"
+        return
+    fi
+
+    # 切换模式
+    local new_mode
+    if [[ "$current_mode" == "true" ]]; then
+        new_mode="false"
+    else
+        new_mode="true"
+    fi
+
+    # 更新配置文件
+    if grep -q "^HNG_COOKIE_SECURE=" "$ENV_FILE" 2>/dev/null; then
+        sed -i "s/^HNG_COOKIE_SECURE=.*/HNG_COOKIE_SECURE=$new_mode/" "$ENV_FILE"
+    else
+        echo "HNG_COOKIE_SECURE=$new_mode" >> "$ENV_FILE"
+    fi
+
+    section "配置已更新！"
+    log "Cookie Secure: $current_mode → $new_mode"
+    echo ""
+    info "重启服务以应用新配置..."
+    systemctl restart host-nginx-manager-web.service
+    sleep 2
+
+    if systemctl is-active host-nginx-manager-web.service >/dev/null 2>&1; then
+        log "✓ 服务已重启"
+        echo ""
+        if [[ "$new_mode" == "true" ]]; then
+            log "✅ 现在只能通过 HTTPS 访问管理界面"
+            warn "⚠️  如通过 HTTP 访问将无法登录"
+        else
+            log "✅ 现在可以通过 HTTP 或 HTTPS 访问管理界面"
+        fi
+    else
+        warn "服务重启失败，请检查日志"
+        systemctl status host-nginx-manager-web.service --no-pager -l
     fi
 }
 
@@ -445,9 +531,9 @@ main() {
     # 交互模式：从 tty 读取用户选择
     while true; do
         show_menu
-        printf "请输入选项 [1-4]: "
+        printf "请输入选项 [1-5]: "
         local choice=""
-        read -r choice <"$TTY_IN" || choice="4"
+        read -r choice <"$TTY_IN" || choice="5"
 
         case "$choice" in
             1)
@@ -475,6 +561,18 @@ main() {
                 fi
                 ;;
             3)
+                if detect_mode; then
+                    do_toggle_cookie_secure
+                    echo ""
+                    printf "按回车键退出..."
+                    read -r _ <"$TTY_IN" || true
+                    exit 0
+                else
+                    echo "退出安装程序"
+                    exit 0
+                fi
+                ;;
+            4)
                 if detect_mode; then
                     echo ""
                     warn "⚠️  警告：全新安装会清理以下内容"
@@ -507,7 +605,7 @@ main() {
                     exit 0
                 fi
                 ;;
-            4)
+            5)
                 echo "退出安装程序"
                 exit 0
                 ;;
