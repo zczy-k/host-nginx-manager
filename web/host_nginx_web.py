@@ -38,6 +38,7 @@ COOKIE_NAME = "hng_session"
 SESSION_TTL = 30 * 60  # 30分钟超时
 SESSION_STORE = {}  # {token: {"expires": timestamp, "last_active": timestamp}}
 LOGIN_ATTEMPTS = {}  # {ip: {"count": int, "locked_until": timestamp}}
+API_RATE_LIMIT = {}  # {ip: {"count": int, "reset_time": timestamp}}
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z0-9.-]+$")
 CERT_WARN_DAYS = int(os.environ.get("HNG_CERT_WARN_DAYS", "30"))
 CERT_CRITICAL_DAYS = int(os.environ.get("HNG_CERT_CRITICAL_DAYS", "7"))
@@ -200,6 +201,24 @@ def record_failed_login(ip: str):
     if ip not in LOGIN_ATTEMPTS:
         LOGIN_ATTEMPTS[ip] = {"count": 0}
     LOGIN_ATTEMPTS[ip]["count"] = LOGIN_ATTEMPTS[ip].get("count", 0) + 1
+
+def check_api_rate_limit(ip: str, max_requests: int = 60, window: int = 60) -> bool:
+    """检查 API 速率限制（默认每分钟60次）"""
+    now = time.time()
+    if ip not in API_RATE_LIMIT:
+        API_RATE_LIMIT[ip] = {"count": 1, "reset_time": now + window}
+        return True
+
+    limit_data = API_RATE_LIMIT[ip]
+    if now > limit_data["reset_time"]:
+        API_RATE_LIMIT[ip] = {"count": 1, "reset_time": now + window}
+        return True
+
+    if limit_data["count"] >= max_requests:
+        return False
+
+    limit_data["count"] += 1
+    return True
 
 def clean_expired_sessions():
     """清理过期 session"""
@@ -4222,10 +4241,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "JSON 格式错误"}, 400)
             return
 
-        if path == "/api/login":
-            client_ip = self.client_address[0]
+        client_ip = self.client_address[0]
 
-            # 检查限流
+        # 登录接口有自己的限流机制，其他接口使用通用限流
+        if path != "/api/login":
+            if not check_api_rate_limit(client_ip):
+                self.send_json({"error": "请求过于频繁，请稍后再试"}, 429)
+                return
+
+        if path == "/api/login":
+            # 检查登录限流
             if not check_login_attempts(client_ip):
                 self.send_json({"error": "登录失败次数过多，请5分钟后再试"}, 429)
                 return
