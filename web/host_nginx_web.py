@@ -1403,6 +1403,7 @@ async function showBackupListModal(){
                   <td>${escapeHtml(b.time)}</td>
                   <td style="text-align:center">
                     <button class="btn small primary" onclick="restoreBackup('${b.file.replace(/'/g, "\\'")}'); this.closest('.modal-overlay').remove()">恢复</button>
+                    <button class="btn small danger" onclick="deleteBackup('${b.file.replace(/'/g, "\\'")}'); this.closest('.modal-overlay').remove(); showBackupListModal()">删除</button>
                   </td>
                 </tr>
               `).join('')}
@@ -1431,6 +1432,13 @@ async function restoreBackup(filename){
   // 执行恢复
   await action('/api/backup/restore', {backup_file: backupPath});
 }
+
+async function deleteBackup(filename){
+  if(!confirm(`⚠️ 确认删除备份？\n\n文件：${filename}\n\n此操作不可撤销！`)) return;
+  const backupPath = '/etc/nginx/vps-proxy-manager/backups/' + filename;
+  await action('/api/backup/delete', {backup_file: backupPath});
+}
+
 async function runHealthCheck(){
   if(!confirm('确认运行健康检查？\n\n将检查所有站点的：\n• 后端连接\n• DNS 解析\n• 证书有效期\n• Nginx 配置')) return;
   await action('/api/health/check', {domain: ''});
@@ -3676,6 +3684,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             result = restore_backup(backup_file)
             self.send_json({"message": "备份已恢复", **result}, 200 if result["code"] == 0 else 500)
+            return
+
+        if path == "/api/backup/delete":
+            backup_file = str(data.get("backup_file", "")).strip()
+            if not backup_file or not backup_file.startswith("/etc/nginx/vps-proxy-manager/backups/"):
+                self.send_json({"error": "无效的备份文件路径"}, 400)
+                return
+            result = run_cmd(["rm", "-f", backup_file], timeout=10)
+            self.send_json({"message": "备份已删除", **result}, 200 if result["code"] == 0 else 500)
             return
 
         if path == "/api/health/check":
