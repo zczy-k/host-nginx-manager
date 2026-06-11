@@ -4132,10 +4132,22 @@ def migrate_legacy_sites() -> dict[str, object]:
 
 
 def run_cmd(args: list[str], timeout: int = 90) -> dict[str, object]:
+    """执行命令（参数列表模式，防止注入）."""
     try:
-        proc = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+        # 确保 args 是列表，且所有元素都是字符串
+        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+            return {"code": 1, "output": "❌ 无效的命令参数"}
+
+        # 禁止 shell 元字符
+        dangerous_chars = ['|', '&', ';', '$', '`', '>', '<', '\n', '\r']
+        for arg in args:
+            if any(char in arg for char in dangerous_chars):
+                return {"code": 1, "output": f"❌ 参数包含非法字符: {arg}"}
+
+        proc = subprocess.run(args, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, timeout=timeout,
+                            shell=False)  # 明确禁用 shell
         output = proc.stdout.strip()
-        # 对失败的命令使用友好错误提示
         if proc.returncode != 0:
             output = parse_friendly_error(output)
         return {"code": proc.returncode, "output": output}
@@ -4366,7 +4378,13 @@ class Handler(BaseHTTPRequestHandler):
             if client_ip in LOGIN_ATTEMPTS:
                 del LOGIN_ATTEMPTS[client_ip]
 
-            secure_flag = "; Secure" if COOKIE_SECURE else ""
+            # 自动检测 HTTPS：检查 X-Forwarded-Proto 或配置
+            is_https = (
+                self.headers.get("X-Forwarded-Proto", "").lower() == "https" or
+                self.headers.get("X-Forwarded-Ssl", "").lower() == "on" or
+                COOKIE_SECURE
+            )
+            secure_flag = "; Secure" if is_https else ""
             cookie = f"{COOKIE_NAME}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}{secure_flag}"
             self.send_json({"ok": True}, headers={"Set-Cookie": cookie})
             return
