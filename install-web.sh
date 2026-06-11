@@ -126,11 +126,18 @@ do_upgrade() {
     chmod 0755 "$MANAGER_BIN"
     log "管理脚本已更新"
 
-    # 3. 升级Web界面
+    # 3. 升级Web界面（优先使用构建版本）
     info "3/5 升级Web界面..."
     mkdir -p "$WEB_DIR" "/var/lib/host-nginx-manager"
     chmod 700 /var/lib/host-nginx-manager
-    curl -fsSL "$RAW_BASE/web/host_nginx_web.py" -o "$WEB_DIR/host_nginx_web.py"
+
+    # 优先下载构建好的单文件版本
+    if curl -fsSL "$RAW_BASE/dist/host_nginx_web.py" -o "$WEB_DIR/host_nginx_web.py" 2>/dev/null; then
+        log "已下载单文件构建版本（包含所有优化）"
+    else
+        warn "单文件版本不存在，下载原始版本"
+        curl -fsSL "$RAW_BASE/web/host_nginx_web.py" -o "$WEB_DIR/host_nginx_web.py"
+    fi
     chmod 0755 "$WEB_DIR/host_nginx_web.py"
     log "Web界面已更新"
 
