@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Lightweight web UI for host-nginx-manager (single-file build)."""
 from __future__ import annotations
 
-from .database import get_db
+from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Optional
-from typing import Optional, Any
-from typing import Optional, Iterator
+from typing import Any, Iterator, Optional
 from urllib.parse import urlparse
 import base64
 import hashlib
@@ -33,7 +32,8 @@ import threading
 import time
 import urllib.request
 
-# Module: utils\validators.py
+
+# Module: utils/validators.py
 
 
 DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$", re.IGNORECASE)
@@ -160,7 +160,7 @@ def sanitize_command_arg(arg: str) -> Optional[str]:
     return arg
 
 
-# Module: utils\qrcode.py
+# Module: utils/qrcode.py
 
 
 def generate_totp_qr_svg(secret: str, account: str = "admin", issuer: str = "Host Nginx Manager") -> str:
@@ -291,7 +291,7 @@ def generate_totp_qr_datauri(secret: str, account: str = "admin") -> str:
     return html
 
 
-# Module: core\database.py
+# Module: core/database.py
 
 
 DB_PATH = pathlib.Path(os.environ.get("HNG_DB_PATH", "/var/lib/host-nginx-manager/state.db"))
@@ -396,7 +396,7 @@ def set_config(key: str, value: str) -> None:
         )
 
 
-# Module: core\audit.py
+# Module: core/audit.py
 
 
 def log_action(
@@ -494,7 +494,7 @@ def cleanup_old_logs(days: int = 90) -> int:
         return cursor.rowcount
 
 
-# Module: auth\password.py
+# Module: auth/password.py
 
 
 def hash_password(password: str) -> str:
@@ -572,7 +572,7 @@ def validate_password_strength(password: str) -> tuple[bool, str]:
     return True, ""
 
 
-# Module: auth\totp.py
+# Module: auth/totp.py
 
 
 def generate_totp_secret() -> str:
@@ -631,7 +631,7 @@ def verify_totp_code(secret: str, code: str, time_window: int = 1) -> bool:
         return False
 
 
-# Module: auth\session.py
+# Module: auth/session.py
 
 
 SESSION_TTL = 30 * 60  # 30分钟
@@ -718,7 +718,7 @@ def delete_all_sessions() -> None:
         db.execute("DELETE FROM sessions")
 
 
-# Module: auth\ratelimit.py
+# Module: auth/ratelimit.py
 
 
 MAX_LOGIN_ATTEMPTS = 5
@@ -872,14 +872,7 @@ def get_remaining_lockout_time(ip: str) -> int:
         locked_until = row['locked_until']
         return max(0, locked_until - now)
 
-try:
-        check_login_attempts, record_failed_login, reset_login_attempts,
-        check_api_rate_limit, get_remaining_lockout_time
-    )
-    MODULAR_MODE = True
-except ImportError:
-    MODULAR_MODE = False
-    # 继续使用内联函数（向后兼容）
+MODULAR_MODE = True  # Built with modules
 
 APP_TITLE = "Host Nginx Manager"
 MANAGER_BIN = os.environ.get("HNG_MANAGER_BIN", "/usr/local/sbin/host-nginx-manager")
