@@ -59,6 +59,16 @@ CREATE TABLE IF NOT EXISTS config (
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
 );
+
+-- 通知历史表
+CREATE TABLE IF NOT EXISTS alert_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp INTEGER NOT NULL,
+    channel TEXT NOT NULL,
+    message TEXT NOT NULL,
+    success INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alert_timestamp ON alert_history(timestamp);
 """
 
 @contextmanager

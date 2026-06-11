@@ -632,6 +632,7 @@ APP_HTML = r'''<!doctype html>
         <div class="row" style="gap:10px">
           <button class="btn primary" onclick="switchToolsTab('basic')" id="toolsBasicBtn">基础维护</button>
           <button class="btn" onclick="switchToolsTab('advanced')" id="toolsAdvancedBtn">高级工具</button>
+          <button class="btn" onclick="switchToolsTab('alerts')" id="toolsAlertsBtn">通知设置</button>
         </div>
       </div>
 
@@ -722,6 +723,81 @@ APP_HTML = r'''<!doctype html>
               <button class="btn" id="migrateCustomBtn" type="button">迁移自定义证书</button>
             </div>
           </details>
+        </div>
+      </div>
+
+      <div id="toolsAlerts" style="display:none">
+        <div class="panel">
+          <h2>🔔 证书到期通知</h2>
+          <p class="muted">自动检查证书到期状态，提前通知避免服务中断</p>
+
+          <div style="margin:20px 0">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="alertEnabled" onchange="toggleAlertSettings()">
+              <span>启用证书到期检查（每天凌晨 3 点）</span>
+            </label>
+          </div>
+
+          <div id="alertSettings" style="display:none">
+            <div style="margin:20px 0">
+              <label>提醒时间：
+                <input type="number" id="alertDays" value="7" min="1" max="30" style="width:80px"> 天前提醒
+              </label>
+            </div>
+
+            <h3 style="margin-top:24px">通知方式</h3>
+
+            <details style="margin:12px 0">
+              <summary><strong>Webhook 通知</strong>（推荐：飞书/钉钉/企业微信）</summary>
+              <div style="margin-top:12px">
+                <label>Webhook URL：</label>
+                <input type="url" id="webhookUrl" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxx" style="width:100%;margin-top:4px">
+                <button class="btn" onclick="testWebhook()" style="margin-top:8px">🧪 测试发送</button>
+                <div class="muted" style="margin-top:12px;font-size:13px">
+                  <strong>支持的机器人：</strong><br>
+                  • 飞书：<a href="https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot" target="_blank" style="color:var(--blue)">创建机器人</a><br>
+                  • 钉钉：<a href="https://open.dingtalk.com/document/robots/custom-robot-access" target="_blank" style="color:var(--blue)">创建机器人</a><br>
+                  • 企业微信：<a href="https://work.weixin.qq.com/api/doc/90000/90136/91770" target="_blank" style="color:var(--blue)">创建机器人</a>
+                </div>
+              </div>
+            </details>
+
+            <details style="margin:12px 0">
+              <summary><strong>邮件通知</strong></summary>
+              <div style="margin-top:12px">
+                <label>收件邮箱：</label>
+                <input type="email" id="alertEmail" placeholder="admin@example.com" style="width:100%;margin-top:4px">
+
+                <label style="margin-top:12px;display:block">SMTP 服务器：</label>
+                <input type="text" id="smtpHost" placeholder="smtp.gmail.com" style="width:100%">
+
+                <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;margin-top:12px">
+                  <div>
+                    <label>端口：</label>
+                    <input type="number" id="smtpPort" value="587" style="width:100%">
+                  </div>
+                  <div>
+                    <label>用户名：</label>
+                    <input type="text" id="smtpUser" placeholder="your@gmail.com" style="width:100%">
+                  </div>
+                </div>
+
+                <label style="margin-top:12px;display:block">密码：</label>
+                <input type="password" id="smtpPass" placeholder="留空表示不修改" style="width:100%">
+
+                <button class="btn" onclick="testEmail()" style="margin-top:8px">🧪 测试发送</button>
+              </div>
+            </details>
+
+            <button class="btn primary" onclick="saveAlertConfig()" style="margin-top:20px">💾 保存配置</button>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:20px">
+          <h2>📋 最近通知</h2>
+          <div id="alertHistory" style="min-height:100px">
+            <p class="muted">加载中...</p>
+          </div>
         </div>
       </div>
     </section>
@@ -1117,16 +1193,22 @@ async function batchDelete(){
 }
 
 function switchToolsTab(tab){
+  $('#toolsBasic').style.display = 'none';
+  $('#toolsAdvanced').style.display = 'none';
+  $('#toolsAlerts').style.display = 'none';
+  $('#toolsBasicBtn').classList.remove('primary');
+  $('#toolsAdvancedBtn').classList.remove('primary');
+  $('#toolsAlertsBtn').classList.remove('primary');
   if(tab === 'basic'){
     $('#toolsBasic').style.display = 'block';
-    $('#toolsAdvanced').style.display = 'none';
     $('#toolsBasicBtn').classList.add('primary');
-    $('#toolsAdvancedBtn').classList.remove('primary');
-  } else {
-    $('#toolsBasic').style.display = 'none';
+  } else if(tab === 'advanced'){
     $('#toolsAdvanced').style.display = 'block';
-    $('#toolsBasicBtn').classList.remove('primary');
     $('#toolsAdvancedBtn').classList.add('primary');
+  } else if(tab === 'alerts'){
+    $('#toolsAlerts').style.display = 'block';
+    $('#toolsAlertsBtn').classList.add('primary');
+    loadAlertConfig();
   }
 }
 const CERT_WARN_STATES = new Set(['warn','missing','error','critical']);
@@ -2644,6 +2726,119 @@ $('#cleanDuplicatesBtn').onclick = async () => {
   }
 };
 
+// 通知设置相关函数
+async function loadAlertConfig() {
+  try {
+    const config = await api('/api/alert-config');
+    $('#alertEnabled').checked = config.enabled || false;
+    $('#alertDays').value = config.days || 7;
+    $('#webhookUrl').value = config.webhook || '';
+    $('#alertEmail').value = config.email || '';
+    $('#smtpHost').value = config.smtp_host || 'smtp.gmail.com';
+    $('#smtpPort').value = config.smtp_port || 587;
+    $('#smtpUser').value = config.smtp_user || '';
+    toggleAlertSettings();
+    loadAlertHistory();
+  } catch(err) {
+    showMsg('加载配置失败: ' + err.message, 'error');
+  }
+}
+
+function toggleAlertSettings() {
+  const enabled = $('#alertEnabled').checked;
+  $('#alertSettings').style.display = enabled ? 'block' : 'none';
+}
+
+async function saveAlertConfig() {
+  const config = {
+    enabled: $('#alertEnabled').checked,
+    days: parseInt($('#alertDays').value),
+    webhook: $('#webhookUrl').value.trim(),
+    email: $('#alertEmail').value.trim(),
+    smtp_host: $('#smtpHost').value.trim(),
+    smtp_port: parseInt($('#smtpPort').value),
+    smtp_user: $('#smtpUser').value.trim(),
+    smtp_pass: $('#smtpPass').value
+  };
+
+  try {
+    await api('/api/alert-config', {method: 'POST', body: JSON.stringify(config)});
+    showMsg('✓ 配置已保存', 'ok');
+    $('#smtpPass').value = '';
+  } catch(err) {
+    showMsg('保存失败: ' + err.message, 'error');
+  }
+}
+
+async function testWebhook() {
+  const url = $('#webhookUrl').value.trim();
+  if (!url) {
+    showMsg('请先填写 Webhook URL', 'warn');
+    return;
+  }
+
+  try {
+    const data = await api('/api/test-webhook', {
+      method: 'POST',
+      body: JSON.stringify({url})
+    });
+    showMsg(data.ok ? '✓ 测试消息已发送' : `✗ 发送失败: ${data.error}`, data.ok ? 'ok' : 'error');
+  } catch(err) {
+    showMsg('测试失败: ' + err.message, 'error');
+  }
+}
+
+async function testEmail() {
+  const email = $('#alertEmail').value.trim();
+  if (!email) {
+    showMsg('请先填写收件邮箱', 'warn');
+    return;
+  }
+
+  try {
+    const data = await api('/api/test-email', {
+      method: 'POST',
+      body: JSON.stringify({
+        email,
+        smtp_host: $('#smtpHost').value.trim(),
+        smtp_port: parseInt($('#smtpPort').value),
+        smtp_user: $('#smtpUser').value.trim(),
+        smtp_pass: $('#smtpPass').value
+      })
+    });
+    showMsg(data.ok ? '✓ 测试邮件已发送' : `✗ 发送失败: ${data.error}`, data.ok ? 'ok' : 'error');
+  } catch(err) {
+    showMsg('测试失败: ' + err.message, 'error');
+  }
+}
+
+async function loadAlertHistory() {
+  try {
+    const data = await api('/api/alert-history');
+    const el = $('#alertHistory');
+    if (!data.history || data.history.length === 0) {
+      el.innerHTML = '<p class="muted">暂无通知记录</p>';
+      return;
+    }
+
+    let html = '<div style="overflow:auto"><table><thead><tr><th>时间</th><th>类型</th><th>内容</th><th>状态</th></tr></thead><tbody>';
+    data.history.forEach(item => {
+      const time = new Date(item.timestamp * 1000).toLocaleString('zh-CN');
+      const statusClass = item.success ? 'ok' : 'bad';
+      html += `<tr>
+        <td>${time}</td>
+        <td><span class="tag">${escapeHtml(item.channel)}</span></td>
+        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(item.message)}</td>
+        <td><span class="tag ${statusClass}">${item.success ? '成功' : '失败'}</span></td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+  } catch(err) {
+    $('#alertHistory').innerHTML = `<p class="muted">加载失败: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
 load().catch(e=>showMsg(e.message,'bad'));
 </script>
 </body>
@@ -4160,6 +4355,215 @@ def run_cmd(args: list[str], timeout: int = 90) -> dict[str, object]:
         return {"code": 127, "output": f"❌ 命令执行失败\n\n错误：{exc}\n\n请确认：\n1. 相关命令已安装（nginx、certbot）\n2. 具有执行权限\n3. 系统资源充足"}
 
 
+# ============= 证书到期通知功能 =============
+
+def get_alert_config() -> dict:
+    """获取通知配置"""
+    try:
+        with get_db() as db:
+            row = db.execute('SELECT value FROM config WHERE key = ?', ('alert_config',)).fetchone()
+            if row:
+                config = json.loads(row[0])
+                # 不返回明文密码
+                if config.get('smtp_pass'):
+                    config['smtp_pass'] = '******' if config['smtp_pass'] else ''
+                return config
+            return {'enabled': False, 'days': 7}
+    except Exception:
+        return {'enabled': False, 'days': 7}
+
+
+def save_alert_config(config: dict):
+    """保存通知配置"""
+    with get_db() as db:
+        # 如果密码是空字符串或占位符，不更新密码
+        if config.get('smtp_pass') in ('', '******', None):
+            # 保留原密码
+            old_config = get_alert_config()
+            if 'smtp_pass' in old_config and old_config['smtp_pass'] != '******':
+                config['smtp_pass'] = old_config.get('smtp_pass', '')
+            else:
+                config.pop('smtp_pass', None)
+
+        db.execute('''
+            INSERT OR REPLACE INTO config (key, value, updated_at)
+            VALUES ('alert_config', ?, ?)
+        ''', (json.dumps(config), int(time.time())))
+
+
+def log_alert_history(channel: str, message: str, success: bool):
+    """记录通知历史"""
+    try:
+        with get_db() as db:
+            db.execute('''
+                INSERT INTO alert_history (timestamp, channel, message, success)
+                VALUES (?, ?, ?, ?)
+            ''', (int(time.time()), channel, message[:500], success))
+
+            # 只保留最近 100 条记录
+            db.execute('''
+                DELETE FROM alert_history
+                WHERE id NOT IN (
+                    SELECT id FROM alert_history ORDER BY timestamp DESC LIMIT 100
+                )
+            ''')
+    except Exception:
+        pass
+
+
+def send_webhook(url: str, message: str) -> bool:
+    """发送 Webhook 通知"""
+    try:
+        import urllib.request
+
+        # 通用格式（支持飞书/钉钉/企业微信）
+        data = json.dumps({"text": message, "msg_type": "text", "content": {"text": message}}).encode()
+
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
+def send_email(to: str, subject: str, body: str, smtp_host: str, smtp_port: int, smtp_user: str, smtp_pass: str) -> bool:
+    """发送邮件通知"""
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+
+        msg = MIMEText(body, 'plain', 'utf-8')
+        msg['Subject'] = subject
+        msg['From'] = smtp_user
+        msg['To'] = to
+
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+        return True
+    except Exception:
+        return False
+
+
+def check_certificates() -> tuple[list, list]:
+    """检查所有证书，返回(已过期, 即将过期)"""
+    expired = []
+    expiring_soon = []
+
+    cert_dir = pathlib.Path("/etc/letsencrypt/live")
+    if not cert_dir.exists():
+        return expired, expiring_soon
+
+    for domain_dir in cert_dir.iterdir():
+        if not domain_dir.is_dir():
+            continue
+
+        cert_file = domain_dir / "cert.pem"
+        if not cert_file.exists():
+            continue
+
+        try:
+            result = subprocess.run(
+                ["openssl", "x509", "-enddate", "-noout", "-in", str(cert_file)],
+                capture_output=True, text=True, timeout=5, shell=False
+            )
+            if result.returncode == 0:
+                # 解析 "notAfter=Jan 1 00:00:00 2027 GMT"
+                expiry_str = result.stdout.split("=")[1].strip()
+                from datetime import datetime, timezone
+                expiry_date = datetime.strptime(expiry_str, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                days_left = (expiry_date - now).days
+
+                if days_left < 0:
+                    expired.append((domain_dir.name, abs(days_left)))
+                elif days_left <= 7:  # 默认7天
+                    expiring_soon.append((domain_dir.name, days_left))
+        except Exception:
+            continue
+
+    return expired, expiring_soon
+
+
+def send_certificate_alert(expired: list, expiring_soon: list):
+    """发送证书告警"""
+    config = get_alert_config()
+    if not config.get('enabled'):
+        return
+
+    # 构建消息
+    message = "🔐 证书到期告警\n\n"
+
+    if expired:
+        message += "❌ 已过期：\n"
+        for domain, days in expired:
+            message += f"  • {domain}（已过期 {days} 天）\n"
+        message += "\n"
+
+    if expiring_soon:
+        message += "⚠️ 即将过期：\n"
+        for domain, days in expiring_soon:
+            message += f"  • {domain}（剩余 {days} 天）\n"
+
+    message += f"\n请及时续期证书以避免服务中断。"
+
+    # 发送 Webhook
+    webhook = config.get('webhook', '').strip()
+    if webhook:
+        success = send_webhook(webhook, message)
+        log_alert_history('webhook', message, success)
+
+    # 发送邮件
+    email = config.get('email', '').strip()
+    if email and config.get('smtp_host') and config.get('smtp_user') and config.get('smtp_pass'):
+        success = send_email(
+            email,
+            "Host Nginx Manager - 证书到期告警",
+            message,
+            config['smtp_host'],
+            config.get('smtp_port', 587),
+            config['smtp_user'],
+            config['smtp_pass']
+        )
+        log_alert_history('email', message, success)
+
+
+def certificate_monitor():
+    """证书监控后台线程"""
+    while True:
+        try:
+            config = get_alert_config()
+            if config.get('enabled'):
+                # 获取提醒天数
+                alert_days = config.get('days', 7)
+
+                # 检查时间：每天凌晨 3 点
+                from datetime import datetime
+                now = datetime.now()
+                if now.hour == 3 and now.minute == 0:
+                    expired, expiring_soon = check_certificates()
+
+                    # 根据配置的天数过滤
+                    expiring_soon = [(d, days) for d, days in expiring_soon if days <= alert_days]
+
+                    if expired or expiring_soon:
+                        send_certificate_alert(expired, expiring_soon)
+
+                    time.sleep(60)  # 避免重复检查
+                else:
+                    time.sleep(60)  # 每分钟检查一次时间
+            else:
+                time.sleep(300)  # 未启用时每5分钟检查一次配置
+        except Exception as e:
+            print(f"证书监控异常: {e}")
+            time.sleep(300)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "HostNginxWeb/1.0"
 
@@ -4309,6 +4713,37 @@ class Handler(BaseHTTPRequestHandler):
                     "traceback": traceback.format_exc()
                 }, 500)
                 return
+
+        # 证书到期通知 API (GET)
+        if path == "/api/alert-config":
+            if not self.require_auth():
+                return
+            self.send_json(get_alert_config())
+            return
+
+        if path == "/api/alert-history":
+            if not self.require_auth():
+                return
+            try:
+                with get_db() as db:
+                    rows = db.execute('''
+                        SELECT timestamp, channel, message, success
+                        FROM alert_history
+                        ORDER BY timestamp DESC
+                        LIMIT 50
+                    ''').fetchall()
+
+                    history = [{
+                        'timestamp': row[0],
+                        'channel': row[1],
+                        'message': row[2],
+                        'success': bool(row[3])
+                    } for row in rows]
+
+                    self.send_json({"history": history})
+            except Exception as e:
+                self.send_json({"history": [], "error": str(e)})
+            return
 
         self.send_error(404)
 
@@ -4719,6 +5154,56 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(result, 200 if result["code"] == 0 else 500)
             return
 
+        # 证书到期通知 API
+        if path == "/api/alert-config":
+            if not self.require_auth():
+                return
+            data = self.read_json()
+            save_alert_config(data)
+            log_action('config', 'update_alert', '更新通知配置')
+            self.send_json({"ok": True})
+            return
+
+        if path == "/api/test-webhook":
+            if not self.require_auth():
+                return
+            data = self.read_json()
+            url = data.get('url', '')
+            if not url:
+                self.send_json({"ok": False, "error": "缺少 URL"}, 400)
+                return
+
+            success = send_webhook(url, "🔐 这是一条测试消息\n\nHost Nginx Manager 证书监控测试")
+            self.send_json({"ok": success, "error": None if success else "发送失败，请检查 URL 是否正确"})
+            return
+
+        if path == "/api/test-email":
+            if not self.require_auth():
+                return
+            data = self.read_json()
+
+            email = data.get('email')
+            smtp_host = data.get('smtp_host')
+            smtp_port = data.get('smtp_port', 587)
+            smtp_user = data.get('smtp_user')
+            smtp_pass = data.get('smtp_pass')
+
+            if not all([email, smtp_host, smtp_user, smtp_pass]):
+                self.send_json({"ok": False, "error": "缺少必要参数"}, 400)
+                return
+
+            success = send_email(
+                email,
+                "Host Nginx Manager 测试邮件",
+                "这是一条测试邮件\n\n证书到期通知功能已启用。\n如果您收到此邮件，说明邮件配置正确。",
+                smtp_host,
+                smtp_port,
+                smtp_user,
+                smtp_pass
+            )
+            self.send_json({"ok": success, "error": None if success else "发送失败，请检查 SMTP 配置"})
+            return
+
         self.send_error(404)
 
 
@@ -4852,6 +5337,11 @@ def main() -> None:
     print(f"  监听: http://{BIND}:{PORT}")
     print(f"  Session 超时: {SESSION_TTL // 60} 分钟")
     print(f"  登录限流: 5次失败锁定5分钟")
+
+    # 启动证书监控后台线程
+    monitor_thread = threading.Thread(target=certificate_monitor, daemon=True, name="CertMonitor")
+    monitor_thread.start()
+    print(f"  证书监控: 已启动（每天凌晨 3 点检查）")
 
     httpd = ThreadingHTTPServer((BIND, PORT), Handler)
     httpd.serve_forever()
