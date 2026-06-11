@@ -1,375 +1,320 @@
 # Host Nginx Manager
 
-Host Nginx Manager 是给”已有宿主 nginx，且不再使用 Nginx Proxy Manager”的 VPS 场景准备的轻量管理工具。
+轻量级 Nginx 反向代理管理工具，专为已有系统 Nginx 的 VPS 场景设计。
+
+> 从 Nginx Proxy Manager 迁移？这是你的最佳选择。
 
 ---
 
-## 🚨 安装前必须满足的条件
+## ✨ 核心特性
 
-在安装本项目之前，请确保您的系统已满足以下**所有**条件：
+- 🎯 **Web 管理界面** - 直观的单页应用，无需 Docker
+- 🔐 **Let's Encrypt 集成** - 自动申请和续期 SSL 证书
+- 📊 **证书监控告警** - 支持 Webhook（飞书/钉钉/企业微信）和邮件通知
+- 🔒 **企业级安全** - PBKDF2 密码哈希、双因素认证、登录限流、审计日志
+- 💾 **SQLite 持久化** - 会话、配置、审计日志本地存储
+- ⚡ **极低资源占用** - 单进程 ~30MB 内存（远低于 Docker 方案）
+- 🛠️ **CLI + Web 双模式** - 命令行和界面任选
 
-### 必需组件（缺一不可）
+---
 
-- ✅ **操作系统**：Linux（Debian/Ubuntu/CentOS/RHEL 等）
-- ✅ **Nginx**：已安装系统 nginx（通过 `apt`/`yum` 安装，非 Docker）
-- ✅ **Python 3**：Python 3.7 或更高版本
-- ✅ **Certbot**：Let's Encrypt 证书工具
-- ✅ **Root 权限**：需要 sudo 或 root 用户权限
+## 📋 系统要求
 
-### 服务器配置要求
+### 必需组件
 
-本项目设计用于**低资源消耗**场景，最低配置：
+- **操作系统**：Linux（Debian/Ubuntu/CentOS 等）
+- **Nginx**：系统 nginx（非 Docker）
+- **Python**：3.7+
+- **Certbot**：Let's Encrypt 工具
+- **权限**：root 或 sudo
 
-- **CPU**：1 核（双核更佳）
-- **内存**：512 MB（1 GB 推荐）
-- **磁盘**：1 GB 可用空间
-- **网络**：公网 IP（用于 Let's Encrypt 证书验证）
-
-**典型适用服务器**：
-- ✅ VPS / 云服务器（阿里云、腾讯云、AWS、Vultr 等）
-- ✅ 低配虚拟机（1C1G、2C2G）
-- ✅ 个人开发服务器
-- ✅ 从 Nginx Proxy Manager 迁移的场景
-
-**资源占用**：
-- Web 管理面板：~30-50 MB 内存
-- Nginx：~10-20 MB 内存（取决于站点数量）
-- 总计：~50-100 MB 内存（远低于 Docker + NPM 方案）
-
-### 快速检查命令
-
-运行以下命令检查是否满足条件：
+### 快速检查
 
 ```bash
-# 检查 Nginx
-nginx -v
+nginx -v && python3 --version && certbot --version
+```
 
-# 检查 Python 3
-python3 --version
+### 安装依赖（如缺失）
 
-# 检查 Certbot
-certbot --version
-
-# 如果缺少组件，请先安装：
-# Debian/Ubuntu:
+```bash
+# Debian/Ubuntu
 sudo apt update && sudo apt install -y nginx python3 certbot python3-certbot-nginx
 
-# CentOS/RHEL:
+# CentOS/RHEL
 sudo yum install -y nginx python3 certbot python3-certbot-nginx
 ```
 
-### ⚠️ 如果缺少上述组件
+### 资源占用
 
-- **没有 Nginx**：先安装 Nginx 后再使用本工具
-- **没有 Python 3**：本工具依赖 Python 3，必须先安装
-- **没有 Certbot**：无法自动申请 SSL 证书
-- **使用 Docker nginx**：本工具不支持，建议使用 Nginx Proxy Manager
-
----
-
-## ⚠️ 使用场景说明
-
-### ✅ 适用场景
-
-本项目适合以下情况：
-
-- ✅ **已安装 Nginx**（系统 nginx，非 Docker）
-- ✅ **主要管理 HTTP/HTTPS 反向代理**
-- ✅ **希望自动管理 Let's Encrypt 证书**
-- ✅ **需要 Web 界面管理多个域名**
-- ✅ **VPS 资源有限**（Python + 系统 nginx，低内存占用）
-- ✅ **从 Nginx Proxy Manager 迁移过来**
-
-### ❌ 不适用场景
-
-以下情况**不建议**使用本项目：
-
-- ❌ **没有安装 Nginx** → 建议先用包管理器安装系统 nginx
-- ❌ **只用 Docker** → 建议使用 Nginx Proxy Manager 或 Traefik
-- ❌ **需要管理 TCP/UDP 流量（stream）** → 本工具只管理 HTTP/HTTPS
-- ❌ **需要复杂的负载均衡和高可用** → 建议使用专业方案
-- ❌ **Windows 服务器** → 本项目仅支持 Linux
-
-### 🔧 本项目管理什么
-
-**管理范围**（会自动创建和修改）：
-- `/etc/nginx/sites-available/vpspm-*.conf` - 站点配置
-- `/etc/nginx/sites-enabled/vpspm-*.conf` - 站点链接
-- Let's Encrypt 证书申请和续期
-
-**不管理范围**（不会修改，手工维护）：
-- `/etc/nginx/nginx.conf` - 全局配置
-- `stream` 块配置
-- TCP/UDP 端口转发
-- Rathole/frp 等隧道工具配置
-- 手工创建的其他 nginx 配置
+- **Web 面板**：~30MB 内存
+- **Nginx**：~10-20MB 内存
+- **磁盘**：<100MB
 
 ---
 
-## 组成部分
+## 🚀 快速开始
 
-本工具有两部分：
-
-- `host-nginx-manager.sh`：命令行管理器
-- `web/host_nginx_web.py`：低资源 Web 管理面板
-
----
-
-## 安装 Web 管理面板（推荐）
-
-推荐安装 Web 面板。它默认监听 `0.0.0.0:8098`，可通过服务器公网 IP 访问。
+### 一键安装 Web 面板
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/install-web.sh | sudo bash
 ```
 
-安装完成后脚本会输出：
+安装完成后：
 
-- 管理地址
-- 管理密码
-- 公网访问地址
+1. 记下管理地址和密码（也可查看 `/etc/host-nginx-manager/web.env`）
+2. 开放防火墙端口 `8098/tcp`
+3. 浏览器访问 `http://服务器IP:8098`
 
-确认云安全组/防火墙放行 `8098/tcp` 后，浏览器打开：
-
-```text
-http://你的服务器IP:8098
-```
-
-如果你想改回只允许 SSH 隧道访问，可以在安装时设置 `HNG_WEB_BIND=127.0.0.1`。
-
-管理密码保存在 VPS：
+### 升级到最新版
 
 ```bash
-sudo cat /etc/host-nginx-manager/web.env
+curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/install-web.sh | sudo bash
+# 选择 1) 升级到最新版本
 ```
 
-## Web 面板功能
+---
 
-当前 Web 面板支持：
+## 🎨 Web 功能
 
-- 查看 nginx 状态和站点统计
-- 查看受管站点、问题汇总
-- 新增标准 HTTP/HTTPS 反向代理
-- 申请并启用 Let's Encrypt HTTPS
-- **查看证书详情**（颁发者、有效期、SAN等）
-- **手动续期证书**
-- 关闭站点 HTTPS
-- 删除受管站点
-- 导入和迁移现有配置
-- 测试 nginx 配置
-- 重载 nginx
-- **应用内帮助文档**
-- **密码管理**（修改密码、重置密码）
-- **双因素认证（2FA）**
-- **Cookie Secure 模式**（HTTPS 环境）
+### 站点管理
+- ✅ 查看所有站点、健康度、证书状态
+- ✅ 新增 HTTP/HTTPS 反向代理
+- ✅ 批量操作（启用/禁用/删除）
+- ✅ 导入现有 Nginx 配置
 
-Web 面板本身不管理 `stream`、Rathole、`ssl_preread`。
+### 证书管理
+- ✅ 一键申请 Let's Encrypt 证书
+- ✅ 自动续期钩子配置
+- ✅ 手动续期
+- ✅ 查看证书详情（颁发者、有效期、SAN）
+- ✅ **证书到期监控**（提前 7 天通知）
+- ✅ **多渠道告警**（Webhook/邮件）
 
-## 安全特性
+### 维护工具
+- ✅ 测试 Nginx 配置
+- ✅ 重载 Nginx
+- ✅ 配置备份与恢复
+- ✅ 健康检查
+- ✅ 证书权限修复工具
 
-- ✅ 强密码策略（12位+复杂度要求）
-- ✅ PBKDF2 密码哈希存储
+### 安全特性
+- ✅ 强密码策略（12位+复杂度）
 - ✅ 双因素认证（TOTP）
-- ✅ 会话管理（30分钟超时）
 - ✅ 登录限流（5次失败锁定5分钟）
-- ✅ API 速率限制（每分钟60次）
-- ✅ 输入验证（防命令注入、路径遍历）
-- ✅ 安全 Cookie（HttpOnly、SameSite）
+- ✅ API 速率限制
+- ✅ 审计日志（所有操作可追溯）
+- ✅ 自动检测 HTTPS（Cookie Secure）
 
-### HTTPS 部署（推荐）
+### 通知设置（新增）
 
-如果通过 HTTPS 反向代理访问管理界面，可启用 Cookie Secure 模式：
+**在"维护"→"通知设置"配置证书到期告警**：
 
-**安装时选择**：安装过程中会询问是否启用
+1. **Webhook 通知**（推荐）
+   - 支持飞书、钉钉、企业微信机器人
+   - 一键测试发送
 
-**后续切换**：
-```bash
-curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/install-web.sh | bash
-# 选择 3) 切换 Cookie Secure 模式
-```
+2. **邮件通知**
+   - SMTP 配置
+   - 支持 Gmail、腾讯企业邮箱等
 
-### 密码管理
+3. **监控设置**
+   - 每天凌晨 3 点自动检查
+   - 提前 N 天提醒（可配置）
+   - 通知历史记录
 
-**修改密码**：登录后在"账户设置"中修改
+---
 
-**忘记密码重置**：
-```bash
-curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/install-web.sh | bash
-# 选择 2) 重置登录密码
-```
+## 🔧 CLI 使用
 
-## 证书管理
-
-### 自动续期（推荐配置）
-
-Let's Encrypt 证书有效期90天，需要自动续期。
-
-**1. 配置自动续期（一次性设置）**
+### 安装 CLI
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/setup-auto-renew.sh | sudo bash
-```
-
-这会：
-- 创建证书续期钩子，续期成功后自动重载nginx
-- 确保certbot定时任务已启用（每天检查2次）
-- 测试续期流程
-
-**2. 验证自动续期**
-
-```bash
-# 检查定时任务
-sudo systemctl list-timers | grep certbot
-
-# 测试续期（不会真正续期）
-sudo certbot renew --dry-run
-```
-
-**3. 查看续期日志**
-
-```bash
-sudo tail -f /var/log/letsencrypt/letsencrypt.log
-```
-
-### 手动续期
-
-**Web界面：**
-1. 进入"证书"视图
-2. 找到需要续期的域名
-3. 点击"查看详情"查看证书信息
-4. 点击"续期"按钮手动续期
-
-**命令行：**
-```bash
-# 续期单个域名
-sudo host-nginx-manager renew domain.com
-
-# 强制续期所有证书
-sudo certbot renew --force-renewal
-```
-
-### 证书健康监控
-
-Web面板会自动检测证书状态：
-- 🟢 **正常**：剩余30天以上
-- 🟡 **预警**：剩余7-30天
-- 🔴 **紧急**：剩余7天以内
-
-在"问题"视图中会显示所有证书异常。
-
-## 安装 CLI 管理器
-
-如果只想使用命令行：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/host-nginx-manager.sh -o /usr/local/sbin/host-nginx-manager
+curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/host-nginx-manager.sh \
+  -o /usr/local/sbin/host-nginx-manager
 sudo chmod +x /usr/local/sbin/host-nginx-manager
 ```
 
-查看帮助：
+### 常用命令
 
 ```bash
-host-nginx-manager help
-```
-
-## 新增普通反向代理
-
-如果后端是本机 `3001` 端口：
-
-```bash
+# 添加反向代理（自动申请证书）
 sudo host-nginx-manager add api.example.com 127.0.0.1:3001 --email you@example.com
-```
 
-这会：
+# 只创建 HTTP（不申请证书）
+sudo host-nginx-manager add blog.example.com 127.0.0.1:8080 --no-ssl
 
-- 写入 `/etc/nginx/sites-available/vpspm-api.example.com.conf`
-- 创建 `/etc/nginx/sites-enabled/vpspm-api.example.com.conf` 链接
-- 先创建 HTTP 站点用于 ACME 验证
-- 使用 `certbot certonly --webroot` 申请证书
-- 启用 HTTPS 并将 HTTP 跳转到 HTTPS
-- `nginx -t` 通过后才 reload nginx
-- 如果新配置失败，会回滚旧配置
+# 后端是自签 HTTPS
+sudo host-nginx-manager add nas.example.com 127.0.0.1:5001 \
+  --upstream-scheme https --backend-insecure
 
-## 只创建 HTTP，不立即申请证书
+# 启用 HTTPS
+sudo host-nginx-manager enable-ssl blog.example.com --email you@example.com
 
-```bash
-sudo host-nginx-manager add api.example.com 127.0.0.1:3001 --no-ssl
-```
+# 续期证书
+sudo host-nginx-manager renew api.example.com
 
-稍后再启用 HTTPS：
-
-```bash
-sudo host-nginx-manager enable-ssl api.example.com --email you@example.com
-```
-
-## 后端是自签 HTTPS
-
-例如后端是 `https://127.0.0.1:58000`，且证书不可被公网 CA 验证：
-
-```bash
-sudo host-nginx-manager add nas.example.com 127.0.0.1:58000 \
-  --upstream-scheme https \
-  --backend-insecure \
-  --client-max-body-size 0 \
-  --email you@example.com
-```
-
-## 查看和维护
-
-```bash
+# 查看站点
 sudo host-nginx-manager list
 sudo host-nginx-manager show api.example.com
+
+# 删除站点
+sudo host-nginx-manager remove api.example.com --yes
+
+# 测试和重载
 sudo host-nginx-manager test
 sudo host-nginx-manager reload
 ```
 
-删除站点：
+---
 
+## 🔐 安全管理
+
+### 修改密码
+
+**Web 界面**：登录后进入"账户设置"
+
+**命令行**：
 ```bash
-sudo host-nginx-manager remove api.example.com --yes
+curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/install-web.sh | sudo bash
+# 选择 2) 重置登录密码
 ```
 
-删除站点并尝试删除证书：
+### 启用双因素认证
+
+1. 登录 Web 界面
+2. 进入"账户设置"→"双因素认证"
+3. 扫描二维码绑定（支持 Google Authenticator、Microsoft Authenticator）
+4. 输入验证码启用
+
+### HTTPS 部署（推荐）
+
+如果通过反向代理（如 Nginx）以 HTTPS 访问管理界面：
 
 ```bash
-sudo host-nginx-manager remove api.example.com --delete-cert --yes
+curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/install-web.sh | sudo bash
+# 选择 3) 切换 Cookie Secure 模式
 ```
 
-## 卸载 Web 面板
+或者添加环境变量：
+```bash
+# /etc/host-nginx-manager/web.env
+HNG_COOKIE_SECURE=true
+```
+
+---
+
+## 📜 证书自动续期
+
+### 配置续期钩子（推荐）
+
+**Web 界面**：进入"维护"→"基础维护"→点击"配置证书续期钩子"
+
+**命令行**：
+```bash
+# 创建续期钩子
+sudo mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh > /dev/null <<'EOF'
+#!/bin/bash
+systemctl reload nginx
+EOF
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+
+# 测试续期
+sudo certbot renew --dry-run
+```
+
+### 验证自动续期
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zczy-k/host-nginx-manager/main/uninstall-web.sh | sudo bash
+# 查看 certbot 定时任务
+sudo systemctl list-timers | grep certbot
+
+# 查看续期日志
+sudo tail -f /var/log/letsencrypt/letsencrypt.log
 ```
 
-它会移除 Web 面板服务和 `/opt/host-nginx-manager`，但默认保留：
+---
 
-- `/usr/local/sbin/host-nginx-manager`
-- `/etc/host-nginx-manager`
-- 已创建的 nginx 站点配置
+## 🎯 适用场景
 
-## 重要边界
+### ✅ 适合你
 
-这个工具不要用来管理：
+- 已安装系统 Nginx（非 Docker）
+- 管理多个域名的 HTTP/HTTPS 反向代理
+- 需要自动管理 Let's Encrypt 证书
+- VPS 资源有限（1C1G 或更低）
+- 从 Nginx Proxy Manager 迁移
 
-- `8443` / `54443` 这类 `stream` 入口
-- Rathole 的 SNI 透传
-- 非 HTTP 协议
-- 已经手工写在 `/etc/nginx/nginx.conf` 里的复杂规则
+### ❌ 不适合你
 
-这些继续手工维护更稳。
+- 没有安装 Nginx → 先安装 nginx
+- 只用 Docker → 推荐 Nginx Proxy Manager 或 Traefik
+- 需要管理 TCP/UDP stream → 手动配置更合适
+- Windows 服务器 → 仅支持 Linux
 
-如果需要把现有手工规则迁移成工具管理，建议逐条迁移：先加一个新子域名验证，再替换旧配置，不要一次性改公网入口。
+---
+
+## 📂 项目结构
+
+```
+.
+├── host-nginx-manager.sh    # CLI 管理脚本
+├── install-web.sh            # Web 面板安装脚本
+├── build.py                  # 单文件构建脚本
+├── web/
+│   ├── host_nginx_web.py    # Web 应用主文件
+│   ├── core/                 # 核心模块（数据库、审计）
+│   ├── auth/                 # 认证模块（会话、密码、2FA）
+│   └── utils/                # 工具模块（验证、QR码）
+└── dist/
+    └── host_nginx_web.py    # 自动构建的单文件版本
+```
+
+---
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+### 开发环境
+
+```bash
+# 克隆仓库
+git clone https://github.com/zczy-k/host-nginx-manager.git
+cd host-nginx-manager
+
+# 模块化模式运行（开发）
+cd web && python3 host_nginx_web.py
+
+# 构建单文件版本
+python3 build.py
+```
+
+### GitHub Actions 自动构建
+
+每次推送到 `main` 分支时，会自动：
+- 合并所有模块到 `dist/host_nginx_web.py`
+- 运行语法检查
+- 提交构建结果
 
 ---
 
 ## 📄 开源协议
 
-本项目采用 [MIT License](LICENSE) 开源协议。
+本项目采用 [MIT License](LICENSE) 开源。
 
-您可以自由地：
-- ✅ 使用本项目（个人或商业）
-- ✅ 修改源代码
-- ✅ 分发和再发布
-- ✅ 用于任何目的
+你可以自由地：
+- ✅ 使用（个人或商业）
+- ✅ 修改
+- ✅ 分发
 
-唯一要求：保留版权声明和许可证副本。
+唯一要求：保留版权声明。
+
+---
+
+## 🙏 致谢
+
+感谢所有贡献者和用户的支持！
+
+如果觉得有用，请给个 ⭐ Star！
