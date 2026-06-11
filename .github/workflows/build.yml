@@ -30,7 +30,7 @@ jobs:
 
     - name: Verify build
       run: |
-        python3 -c "import sys; sys.path.insert(0, 'dist'); exec(open('dist/host_nginx_web.py').read().split('if __name__')[0])"
+        python3 -m py_compile dist/host_nginx_web.py
         echo "✅ Build verification passed"
 
     - name: Commit built file

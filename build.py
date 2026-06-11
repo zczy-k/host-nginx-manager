@@ -107,7 +107,7 @@ def merge_modules(src_dir: Path, output: Path, main_file: Path) -> None:
         all_imports.update(imports)
 
         if code.strip():
-            code_blocks.append(f"\n# ===== Module: {py_file.relative_to(src_dir)} =====\n")
+            code_blocks.append(f"\n# Module: {py_file.relative_to(src_dir)}\n")
             code_blocks.append(code)
             print(f"  ✓ {py_file.relative_to(src_dir)}")
 
@@ -141,17 +141,9 @@ def merge_modules(src_dir: Path, output: Path, main_file: Path) -> None:
             if imp and not imp.startswith('from __future__'):
                 f.write(imp + '\n')
 
-        f.write('\n' + '='*80 + '\n')
-        f.write('# MODULAR CODE (auto-merged by build.py)\n')
-        f.write('='*80 + '\n')
-
-        # 写入所有模块代码
+        # 写入所有模块代码（去除分隔线）
         for block in code_blocks:
-            f.write(block + '\n')
-
-        f.write('\n' + '='*80 + '\n')
-        f.write('# MAIN APPLICATION CODE\n')
-        f.write('='*80 + '\n\n')
+            f.write(block + '\n\n')
 
         # 写入主代码
         f.write(main_code)
