@@ -751,7 +751,7 @@ APP_HTML = r'''<!doctype html>
               <summary><strong>Webhook 通知</strong>（推荐：飞书/钉钉/企业微信）</summary>
               <div style="margin-top:12px">
                 <label>Webhook URL：</label>
-                <input type="url" id="webhookUrl" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxx" style="width:100%;margin-top:4px">
+                <input type="text" id="webhookUrl" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxx" style="width:100%;margin-top:4px">
                 <button class="btn" onclick="testWebhook()" style="margin-top:8px">🧪 测试发送</button>
                 <div class="muted" style="margin-top:12px;font-size:13px">
                   <strong>支持的机器人：</strong><br>
