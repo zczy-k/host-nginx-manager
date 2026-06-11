@@ -6022,14 +6022,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             data = self.read_json()
 
-            email = data.get('email')
-            smtp_host = data.get('smtp_host')
+            email = data.get('email', '').strip()
+            smtp_host = data.get('smtp_host', '').strip()
             smtp_port = data.get('smtp_port', 587)
-            smtp_user = data.get('smtp_user')
-            smtp_pass = data.get('smtp_pass')
+            smtp_user = data.get('smtp_user', '').strip()
+            smtp_pass = data.get('smtp_pass', '').strip()
 
             if not all([email, smtp_host, smtp_user, smtp_pass]):
-                self.send_json({"ok": False, "error": "缺少必要参数"}, 400)
+                self.send_json({"ok": False, "error": "请填写完整的 SMTP 配置"}, 400)
                 return
 
             success = send_email(
