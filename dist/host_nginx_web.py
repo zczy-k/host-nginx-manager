@@ -5868,7 +5868,6 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/alert-config":
             if not self.require_auth():
                 return
-            data = self.read_json()
             save_alert_config(data)
             log_action('config', 'update_alert', '更新通知配置')
             self.send_json({"ok": True})
@@ -5877,7 +5876,6 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/test-webhook":
             if not self.require_auth():
                 return
-            data = self.read_json()
             url = data.get('url', '')
             if not url:
                 self.send_json({"ok": False, "error": "缺少 URL"}, 400)
@@ -5890,7 +5888,6 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/test-email":
             if not self.require_auth():
                 return
-            data = self.read_json()
 
             email = data.get('email', '').strip()
             smtp_host = data.get('smtp_host', '').strip()
