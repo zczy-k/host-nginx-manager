@@ -1606,10 +1606,10 @@ APP_HTML = r'''<!doctype html>
               <summary><strong>邮件通知</strong></summary>
               <div style="margin-top:12px">
                 <label>收件邮箱：</label>
-                <input type="text" id="alertEmail" placeholder="admin@example.com" style="width:100%;margin-top:4px">
+                <input type="text" id="alertEmail" placeholder="接收告警的邮箱，可与发件邮箱相同" style="width:100%;margin-top:4px">
 
                 <label style="margin-top:12px;display:block">SMTP 服务器：</label>
-                <input type="text" id="smtpHost" placeholder="smtp.gmail.com" style="width:100%">
+                <input type="text" id="smtpHost" placeholder="如：smtp.gmail.com 或 smtp.qq.com" style="width:100%">
 
                 <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;margin-top:12px">
                   <div>
@@ -1617,13 +1617,13 @@ APP_HTML = r'''<!doctype html>
                     <input type="number" id="smtpPort" value="587" style="width:100%">
                   </div>
                   <div>
-                    <label>用户名：</label>
+                    <label>用户名（发件邮箱）：</label>
                     <input type="text" id="smtpUser" placeholder="your@gmail.com" style="width:100%">
                   </div>
                 </div>
 
                 <label style="margin-top:12px;display:block">密码：</label>
-                <input type="password" id="smtpPass" placeholder="留空表示不修改" style="width:100%">
+                <input type="password" id="smtpPass" placeholder="Gmail 需用应用专用密码，QQ 邮箱需用授权码" style="width:100%">
 
                 <button class="btn" onclick="testEmail()" style="margin-top:8px">🧪 测试发送</button>
               </div>
@@ -5251,7 +5251,7 @@ def log_alert_history(channel: str, message: str, success: bool):
         pass
 
 
-def send_webhook(url: str, message: str) -> bool:
+def send_webhook(url: str, message: str) -> tuple[bool, str]:
     """发送 Webhook 通知"""
     try:
         import urllib.request
@@ -5265,12 +5265,12 @@ def send_webhook(url: str, message: str) -> bool:
             headers={"Content-Type": "application/json"}
         )
         with urllib.request.urlopen(req, timeout=10) as response:
-            return response.status == 200
-    except Exception:
-        return False
+            return (response.status == 200, "" if response.status == 200 else f"HTTP {response.status}")
+    except Exception as e:
+        return (False, str(e))
 
 
-def send_email(to: str, subject: str, body: str, smtp_host: str, smtp_port: int, smtp_user: str, smtp_pass: str) -> bool:
+def send_email(to: str, subject: str, body: str, smtp_host: str, smtp_port: int, smtp_user: str, smtp_pass: str) -> tuple[bool, str]:
     """发送邮件通知"""
     try:
         import smtplib
@@ -5285,9 +5285,9 @@ def send_email(to: str, subject: str, body: str, smtp_host: str, smtp_port: int,
             server.starttls()
             server.login(smtp_user, smtp_pass)
             server.send_message(msg)
-        return True
-    except Exception:
-        return False
+        return (True, "")
+    except Exception as e:
+        return (False, str(e))
 
 
 def check_certificates() -> tuple[list, list]:
@@ -5355,13 +5355,13 @@ def send_certificate_alert(expired: list, expiring_soon: list):
     # 发送 Webhook
     webhook = config.get('webhook', '').strip()
     if webhook:
-        success = send_webhook(webhook, message)
+        success, _ = send_webhook(webhook, message)
         log_alert_history('webhook', message, success)
 
     # 发送邮件
     email = config.get('email', '').strip()
     if email and config.get('smtp_host') and config.get('smtp_user') and config.get('smtp_pass'):
-        success = send_email(
+        success, _ = send_email(
             email,
             "Host Nginx Manager - 证书到期告警",
             message,
@@ -5863,8 +5863,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "缺少 URL"}, 400)
                 return
 
-            success = send_webhook(url, "🔐 这是一条测试消息\n\nHost Nginx Manager 证书监控测试")
-            self.send_json({"ok": success, "error": None if success else "发送失败，请检查 URL 是否正确"})
+            success, error = send_webhook(url, "🔐 这是一条测试消息\n\nHost Nginx Manager 证书监控测试")
+            self.send_json({"ok": success, "error": error or None})
             return
 
         if path == "/api/test-email":
@@ -5882,7 +5882,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "请填写完整的 SMTP 配置"}, 400)
                 return
 
-            success = send_email(
+            success, error = send_email(
                 email,
                 "Host Nginx Manager 测试邮件",
                 "这是一条测试邮件\n\n证书到期通知功能已启用。\n如果您收到此邮件，说明邮件配置正确。",
@@ -5891,7 +5891,7 @@ class Handler(BaseHTTPRequestHandler):
                 smtp_user,
                 smtp_pass
             )
-            self.send_json({"ok": success, "error": None if success else "发送失败，请检查 SMTP 配置"})
+            self.send_json({"ok": success, "error": error or None})
             return
 
         # 验证 domain 参数（通用验证，放在最后）
