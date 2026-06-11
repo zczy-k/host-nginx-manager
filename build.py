@@ -131,16 +131,30 @@ def merge_modules(src_dir: Path, output: Path, main_file: Path) -> None:
     main_imports, main_code = extract_imports(main_content)
     all_imports.update(main_imports)
 
-    # 4. 移除主文件中对内部模块的导入
-    main_code_lines = []
-    for line in main_code.splitlines():
-        stripped = line.strip()
-        # 移除内部模块导入
-        if any(stripped.startswith(f'from {mod}') or stripped.startswith(f'import {mod}')
-              for mod in ['core', 'auth', 'certs', 'proxy', 'api', 'ui', 'utils']):
-            continue
-        main_code_lines.append(line)
-    main_code = '\n'.join(main_code_lines)
+    # 4. 移除主文件中的模块导入 try-except 块
+    # 查找并替换整个 try-except 导入块
+    import_try_pattern = r'try:\s+from core\..*?except ImportError:\s+MODULAR_MODE = False.*?(?=\n[A-Z_])'
+    main_code = re.sub(import_try_pattern, 'MODULAR_MODE = True  # Built with modules\n', main_code, flags=re.DOTALL)
+
+    # 如果上面的正则没匹配到，用简单替换
+    if 'try:' in main_code and 'from core.' in main_code:
+        lines = main_code.splitlines()
+        result = []
+        skip = False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            # 找到 try: 开始，并检查是否是模块导入块
+            if stripped == 'try:' and i + 1 < len(lines) and ('from core' in lines[i+1] or 'from auth' in lines[i+1]):
+                skip = True
+                continue
+            if skip:
+                # 找到 except ImportError 结束
+                if 'except ImportError:' in stripped:
+                    result.append('MODULAR_MODE = True  # Built with modules')
+                    skip = False
+                continue
+            result.append(line)
+        main_code = '\n'.join(result)
 
     # 5. 生成单文件
     output.parent.mkdir(parents=True, exist_ok=True)
