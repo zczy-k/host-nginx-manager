@@ -55,7 +55,7 @@ def extract_imports(content: str) -> tuple[Set[str], str]:
         # 提取导入（标准库，非内部模块，非相对导入）
         if not skip_imports and re.match(r'^(from __future__|import |from [\w.]+\s+import)', stripped):
             # 排除内部模块和相对导入
-            if not any(pattern in line for pattern in [' core.', ' auth.', ' utils.', ' certs.', ' proxy.', ' api.', ' ui.', 'from .', 'import .']):
+            if not any(pattern in stripped for pattern in ['core.', 'auth.', 'utils.', 'certs.', 'proxy.', 'api.', 'ui.', 'from .', 'import .']):
                 imports.append(stripped)
             continue
 
