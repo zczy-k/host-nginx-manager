@@ -128,7 +128,8 @@ do_upgrade() {
 
     # 3. 升级Web界面
     info "3/5 升级Web界面..."
-    mkdir -p "$WEB_DIR"
+    mkdir -p "$WEB_DIR" "/var/lib/host-nginx-manager"
+    chmod 700 /var/lib/host-nginx-manager
     curl -fsSL "$RAW_BASE/web/host_nginx_web.py" -o "$WEB_DIR/host_nginx_web.py"
     chmod 0755 "$WEB_DIR/host_nginx_web.py"
     log "Web界面已更新"
