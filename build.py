@@ -18,44 +18,38 @@ def extract_imports(content: str) -> tuple[Set[str], str]:
     lines = content.splitlines()
     imports = set()
     code_lines = []
-    in_docstring = False
-    docstring_lines = []
+    skip_until_code = True
 
     for i, line in enumerate(lines):
         stripped = line.strip()
 
-        # 跳过 shebang 和编码声明
+        # 跳过文件开头的 shebang、编码、文档字符串
         if i == 0 and stripped.startswith('#!'):
             continue
         if stripped.startswith('# -*- coding:') or stripped.startswith('# coding:'):
             continue
-
-        # 处理文档字符串
-        if i <= 2 and (stripped.startswith('"""') or stripped.startswith("'''")):
-            if not in_docstring:
-                in_docstring = True
-                docstring_lines.append(line)
-                if stripped.count('"""') == 2 or stripped.count("'''") == 2:
-                    in_docstring = False
+        if i <= 3 and (stripped.startswith('"""') or stripped.startswith("'''")):
+            # 跳过模块文档字符串
+            if stripped.count('"""') >= 2 or stripped.count("'''") >= 2:
                 continue
-            else:
-                in_docstring = False
-                docstring_lines.append(line)
-                continue
-        if in_docstring:
-            docstring_lines.append(line)
             continue
 
-        # 提取标准库导入（排除内部模块导入）
-        if re.match(r'^(from __future__|import |from \w+(\.\w+)? import)', stripped):
+        # 提取导入语句（在文件顶部，且是标准库导入）
+        if skip_until_code and re.match(r'^(from __future__|import |from [\w.]+\s+import)', stripped):
             # 排除内部模块
-            if not any(stripped.startswith(f'from {mod}') or stripped.startswith(f'import {mod}')
+            if not any(f' {mod}.' in line or f' {mod} ' in line or line.startswith(f'from {mod}') or line.startswith(f'import {mod}')
                       for mod in ['core', 'auth', 'certs', 'proxy', 'api', 'ui', 'utils']):
-                imports.add(line.rstrip())
+                imports.add(stripped)  # 只存储去除空格的导入语句
             continue
 
-        # 普通代码行
-        code_lines.append(line)
+        # 遇到非导入代码，开始保留
+        if stripped and not stripped.startswith('#'):
+            skip_until_code = False
+
+        # 保留所有非导入代码
+        if not skip_until_code or stripped.startswith('def ') or stripped.startswith('class '):
+            skip_until_code = False
+            code_lines.append(line)
 
     return imports, '\n'.join(code_lines)
 
@@ -144,7 +138,7 @@ def merge_modules(src_dir: Path, output: Path, main_file: Path) -> None:
         # 写入所有标准库导入（排序去重）
         sorted_imports = sorted(all_imports)
         for imp in sorted_imports:
-            if imp.strip() and not imp.startswith('from __future__'):
+            if imp and not imp.startswith('from __future__'):
                 f.write(imp + '\n')
 
         f.write('\n' + '='*80 + '\n')
@@ -153,7 +147,7 @@ def merge_modules(src_dir: Path, output: Path, main_file: Path) -> None:
 
         # 写入所有模块代码
         for block in code_blocks:
-            f.write(block)
+            f.write(block + '\n')
 
         f.write('\n' + '='*80 + '\n')
         f.write('# MAIN APPLICATION CODE\n')
