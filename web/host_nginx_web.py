@@ -2737,6 +2737,11 @@ async function loadAlertConfig() {
     $('#smtpHost').value = config.smtp_host || 'smtp.gmail.com';
     $('#smtpPort').value = config.smtp_port || 587;
     $('#smtpUser').value = config.smtp_user || '';
+    // 如果已保存密码（后端返回 ******），给密码字段设置提示而非留空
+    if (config.smtp_pass === '******') {
+      $('#smtpPass').placeholder = '密码已保存，留空则保持原密码不变';
+      $('#smtpPass').value = '';
+    }
     toggleAlertSettings();
     loadAlertHistory();
   } catch(err) {
@@ -4358,7 +4363,7 @@ def run_cmd(args: list[str], timeout: int = 90) -> dict[str, object]:
 # ============= 证书到期通知功能 =============
 
 def get_alert_config() -> dict:
-    """获取通知配置"""
+    """获取通知配置（密码被掩盖，用于返回给前端）"""
     try:
         with get_db() as db:
             row = db.execute('SELECT value FROM config WHERE key = ?', ('alert_config',)).fetchone()
@@ -4373,15 +4378,30 @@ def get_alert_config() -> dict:
         return {'enabled': False, 'days': 7}
 
 
+def get_alert_config_raw() -> dict:
+    """获取通知配置原始数据（包含真实密码，仅用于内部逻辑）"""
+    try:
+        with get_db() as db:
+            row = db.execute('SELECT value FROM config WHERE key = ?', ('alert_config',)).fetchone()
+            if row:
+                return json.loads(row[0])
+            return {'enabled': False, 'days': 7}
+    except Exception:
+        return {'enabled': False, 'days': 7}
+
+
 def save_alert_config(config: dict):
     """保存通知配置"""
     with get_db() as db:
-        # 如果密码是空字符串或占位符，不更新密码
+        # 如果密码是空字符串或占位符，保留原密码（直接从数据库读取原始数据，不经过掩盖处理）
         if config.get('smtp_pass') in ('', '******', None):
-            # 保留原密码
-            old_config = get_alert_config()
-            if 'smtp_pass' in old_config and old_config['smtp_pass'] != '******':
-                config['smtp_pass'] = old_config.get('smtp_pass', '')
+            row = db.execute('SELECT value FROM config WHERE key = ?', ('alert_config',)).fetchone()
+            if row:
+                old_config = json.loads(row[0])
+                if 'smtp_pass' in old_config and old_config['smtp_pass']:
+                    config['smtp_pass'] = old_config['smtp_pass']
+                else:
+                    config.pop('smtp_pass', None)
             else:
                 config.pop('smtp_pass', None)
 
@@ -5038,8 +5058,13 @@ class Handler(BaseHTTPRequestHandler):
             smtp_user = data.get('smtp_user', '').strip()
             smtp_pass = data.get('smtp_pass', '').strip()
 
+            # 前端密码字段为空时（页面加载不回填密码），从已保存的配置中读取
+            if not smtp_pass:
+                saved_config = get_alert_config_raw()
+                smtp_pass = saved_config.get('smtp_pass', '')
+
             if not all([email, smtp_host, smtp_user, smtp_pass]):
-                self.send_json({"ok": False, "error": "请填写完整的 SMTP 配置"}, 400)
+                self.send_json({"ok": False, "error": "请填写完整的 SMTP 配置（密码未填写且未找到已保存的密码）"}, 400)
                 return
 
             success, error = send_email(
