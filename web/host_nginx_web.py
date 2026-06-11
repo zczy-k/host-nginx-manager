@@ -766,7 +766,7 @@ APP_HTML = r'''<!doctype html>
               <summary><strong>邮件通知</strong></summary>
               <div style="margin-top:12px">
                 <label>收件邮箱：</label>
-                <input type="email" id="alertEmail" placeholder="admin@example.com" style="width:100%;margin-top:4px">
+                <input type="text" id="alertEmail" placeholder="admin@example.com" style="width:100%;margin-top:4px">
 
                 <label style="margin-top:12px;display:block">SMTP 服务器：</label>
                 <input type="text" id="smtpHost" placeholder="smtp.gmail.com" style="width:100%">
