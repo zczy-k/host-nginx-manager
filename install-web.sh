@@ -154,7 +154,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=/etc/nginx /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /var/log/nginx /run /tmp /etc/host-nginx-manager
+ReadWritePaths=/etc/nginx /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /var/log/nginx /run /tmp /etc/host-nginx-manager /var/lib/host-nginx-manager
 
 [Install]
 WantedBy=multi-user.target
@@ -372,14 +372,21 @@ do_install() {
     install_packages
 
     info "创建安装目录..."
-    mkdir -p "$WEB_DIR" "$ENV_DIR"
+    mkdir -p "$WEB_DIR" "$ENV_DIR" "/var/lib/host-nginx-manager"
+    chmod 700 /var/lib/host-nginx-manager
 
     info "下载管理脚本..."
     curl -fsSL "$RAW_BASE/host-nginx-manager.sh" -o "$MANAGER_BIN"
     chmod 0755 "$MANAGER_BIN"
 
-    info "下载Web界面..."
-    curl -fsSL "$RAW_BASE/web/host_nginx_web.py" -o "$WEB_DIR/host_nginx_web.py"
+    info "下载Web界面（单文件版本）..."
+    # 优先下载构建好的单文件版本，如果不存在则下载原始版本
+    if curl -fsSL "$RAW_BASE/dist/host_nginx_web.py" -o "$WEB_DIR/host_nginx_web.py" 2>/dev/null; then
+        log "已下载单文件构建版本（包含所有优化）"
+    else
+        warn "单文件版本不存在，下载原始版本"
+        curl -fsSL "$RAW_BASE/web/host_nginx_web.py" -o "$WEB_DIR/host_nginx_web.py"
+    fi
     chmod 0755 "$WEB_DIR/host_nginx_web.py"
 
     # 生成新的密码和密钥（全新安装）
@@ -456,7 +463,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=/etc/nginx /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /var/log/nginx /run /tmp /etc/host-nginx-manager
+ReadWritePaths=/etc/nginx /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /var/log/nginx /run /tmp /etc/host-nginx-manager /var/lib/host-nginx-manager
 
 [Install]
 WantedBy=multi-user.target

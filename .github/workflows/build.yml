@@ -1,0 +1,47 @@
+name: Build Single File
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'web/**'
+      - 'build.py'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Build single file
+      run: |
+        python3 build.py
+        ls -lh dist/
+
+    - name: Verify build
+      run: |
+        python3 -c "import sys; sys.path.insert(0, 'dist'); exec(open('dist/host_nginx_web.py').read().split('if __name__')[0])"
+        echo "✅ Build verification passed"
+
+    - name: Commit built file
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add dist/host_nginx_web.py -f
+        git diff --staged --quiet || git commit -m "Build: auto-generate single file [skip ci]"
+
+    - name: Push changes
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        branch: ${{ github.ref }}

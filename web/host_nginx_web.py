@@ -16,6 +16,7 @@ import secrets
 import socket
 import ssl
 import subprocess
+import sys
 import tarfile
 import time
 import urllib.request
@@ -24,6 +25,24 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 from urllib.parse import urlparse
+
+# 尝试导入模块化组件，如果失败则使用内联版本
+try:
+    from core.database import init_database, clean_expired_data, get_db
+    from core.audit import log_action, get_audit_logs
+    from auth.session import create_session, verify_session, delete_session, delete_all_sessions
+    from auth.password import hash_password, verify_password, validate_password_strength
+    from auth.totp import generate_totp_secret, generate_totp_code, verify_totp_code
+    from auth.ratelimit import (
+        check_login_attempts, record_failed_login, reset_login_attempts,
+        check_api_rate_limit, get_remaining_lockout_time
+    )
+    from utils.validators import validate_domain, validate_email, validate_upstream
+    from utils.qrcode import generate_totp_qr_svg, generate_totp_qr_datauri
+    MODULAR_MODE = True
+except ImportError:
+    MODULAR_MODE = False
+    # 继续使用内联函数（向后兼容）
 
 APP_TITLE = "Host Nginx Manager"
 MANAGER_BIN = os.environ.get("HNG_MANAGER_BIN", "/usr/local/sbin/host-nginx-manager")
@@ -36,9 +55,9 @@ TOTP_SECRET = os.environ.get("HNG_WEB_TOTP_SECRET", "")  # 2FA密钥
 SECRET = os.environ.get("HNG_WEB_SECRET", "") or secrets.token_urlsafe(32)
 COOKIE_NAME = "hng_session"
 SESSION_TTL = 30 * 60  # 30分钟超时
-SESSION_STORE = {}  # {token: {"expires": timestamp, "last_active": timestamp}}
-LOGIN_ATTEMPTS = {}  # {ip: {"count": int, "locked_until": timestamp}}
-API_RATE_LIMIT = {}  # {ip: {"count": int, "reset_time": timestamp}}
+SESSION_STORE = {}  # {token: {"expires": timestamp, "last_active": timestamp}} - 仅MODULAR_MODE=False时使用
+LOGIN_ATTEMPTS = {}  # {ip: {"count": int, "locked_until": timestamp}} - 仅MODULAR_MODE=False时使用
+API_RATE_LIMIT = {}  # {ip: {"count": int, "reset_time": timestamp}} - 仅MODULAR_MODE=False时使用
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z0-9.-]+$")
 CERT_WARN_DAYS = int(os.environ.get("HNG_CERT_WARN_DAYS", "30"))
 CERT_CRITICAL_DAYS = int(os.environ.get("HNG_CERT_CRITICAL_DAYS", "7"))
@@ -80,18 +99,67 @@ def verify_totp_code(secret: str, code: str) -> bool:
         return False
 
 def generate_totp_qr(secret: str, account: str = "admin") -> str:
-    """生成 TOTP 二维码（Base64）"""
+    """生成 TOTP 二维码（本地生成，无外部依赖）"""
+    if MODULAR_MODE:
+        return generate_totp_qr_datauri(secret, account)
+
+    # 备选：返回前端生成的 HTML
     try:
         import urllib.parse
-        # otpauth://totp/Host%20Nginx%20Manager:admin?secret=xxx&issuer=Host%20Nginx%20Manager
         label = urllib.parse.quote(f"Host Nginx Manager:{account}")
         issuer = urllib.parse.quote("Host Nginx Manager")
         uri = f"otpauth://totp/{label}?secret={secret}&issuer={issuer}"
 
-        # 简单的二维码生成（纯文本，前端可用库生成）
-        # 这里返回一个指向在线QR生成器的URL
-        qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=250x250&data={urllib.parse.quote(uri)}"
-        return qr_url
+        # 返回包含前端 QR 生成的 HTML（使用 CDN 库，无后端依赖）
+        html = f'''
+        <div style="padding: 20px; background: #f8f9fa; border-radius: 8px; margin: 20px 0;">
+            <h4 style="margin-top: 0;">配置双因素认证</h4>
+            <div id="qr-container" style="text-align: center; margin: 20px 0;">
+                <canvas id="qr-canvas" width="250" height="250"></canvas>
+            </div>
+            <p style="margin-top: 10px; font-family: monospace; word-break: break-all; text-align: center;">
+                <strong>密钥:</strong> {secret}
+            </p>
+            <p style="font-size: 12px; color: #666; text-align: center;">
+                如果无法扫描，请手动输入上述密钥到认证器应用
+            </p>
+        </div>
+        <script>
+        (function() {{
+            var uri = "{uri}";
+            var canvas = document.getElementById('qr-canvas');
+            var ctx = canvas.getContext('2d');
+            var script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/qrcodegen@1.8.0/qrcodegen.min.js';
+            script.onload = function() {{
+                try {{
+                    var qr = qrcodegen.QrCode.encodeText(uri, qrcodegen.QrCode.Ecc.MEDIUM);
+                    var scale = Math.floor(250 / qr.size);
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.fillRect(0, 0, 250, 250);
+                    ctx.fillStyle = '#000000';
+                    for (var y = 0; y < qr.size; y++) {{
+                        for (var x = 0; x < qr.size; x++) {{
+                            if (qr.getModule(x, y)) {{
+                                ctx.fillRect(x * scale, y * scale, scale, scale);
+                            }}
+                        }}
+                    }}
+                }} catch(e) {{
+                    ctx.font = '14px Arial';
+                    ctx.fillText('QR 生成失败', 10, 125);
+                }}
+            }};
+            script.onerror = function() {{
+                ctx.font = '12px Arial';
+                ctx.fillStyle = '#d9534f';
+                ctx.fillText('请手动输入密钥', 50, 125);
+            }};
+            document.head.appendChild(script);
+        }})();
+        </script>
+        '''
+        return html
     except Exception:
         return ""
 
@@ -4724,6 +4792,29 @@ def main() -> None:
 
         sys.exit(0)
 
+    # 初始化数据库（如果使用模块化模式）
+    if MODULAR_MODE:
+        try:
+            init_database()
+            print(f"✅ 数据库初始化成功（SQLite 持久化）")
+            print(f"   模式: 模块化 + SQLite")
+            # 启动后台清理任务
+            import threading
+            def cleanup_task():
+                while True:
+                    time.sleep(3600)  # 每小时清理一次
+                    try:
+                        clean_expired_data()
+                    except Exception:
+                        pass
+            cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
+            cleanup_thread.start()
+        except Exception as e:
+            print(f"⚠️  数据库初始化失败: {e}")
+            print(f"   回退到内存模式")
+    else:
+        print(f"   模式: 内存存储（传统模式）")
+
     # 检查密码配置
     if not PASSWORD_HASH and not PASSWORD:
         print("错误：未设置密码！")
@@ -4739,7 +4830,7 @@ def main() -> None:
         print("⚠️  警告：使用明文密码，建议改用 hash 密码")
         print("   运行: python3 web/host_nginx_web.py hash-password")
 
-    print(f"{APP_TITLE} 启动")
+    print(f"\n{APP_TITLE} 启动")
     print(f"  监听: http://{BIND}:{PORT}")
     print(f"  Session 超时: {SESSION_TTL // 60} 分钟")
     print(f"  登录限流: 5次失败锁定5分钟")

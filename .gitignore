@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .DS_Store
+*.db
+*.db-journal
+web/host_nginx_web.py.backup

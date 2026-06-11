@@ -1,0 +1,1 @@
+"""Nginx proxy configuration module."""
