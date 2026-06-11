@@ -5844,7 +5844,57 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"message": "健康检查完成", **result}, 200 if result["code"] == 0 else 500)
             return
 
-        # 验证 domain 参数
+        # 证书到期通知 API（在通用域名验证之前）
+        if path == "/api/alert-config":
+            if not self.require_auth():
+                return
+            data = self.read_json()
+            save_alert_config(data)
+            log_action('config', 'update_alert', '更新通知配置')
+            self.send_json({"ok": True})
+            return
+
+        if path == "/api/test-webhook":
+            if not self.require_auth():
+                return
+            data = self.read_json()
+            url = data.get('url', '')
+            if not url:
+                self.send_json({"ok": False, "error": "缺少 URL"}, 400)
+                return
+
+            success = send_webhook(url, "🔐 这是一条测试消息\n\nHost Nginx Manager 证书监控测试")
+            self.send_json({"ok": success, "error": None if success else "发送失败，请检查 URL 是否正确"})
+            return
+
+        if path == "/api/test-email":
+            if not self.require_auth():
+                return
+            data = self.read_json()
+
+            email = data.get('email', '').strip()
+            smtp_host = data.get('smtp_host', '').strip()
+            smtp_port = data.get('smtp_port', 587)
+            smtp_user = data.get('smtp_user', '').strip()
+            smtp_pass = data.get('smtp_pass', '').strip()
+
+            if not all([email, smtp_host, smtp_user, smtp_pass]):
+                self.send_json({"ok": False, "error": "请填写完整的 SMTP 配置"}, 400)
+                return
+
+            success = send_email(
+                email,
+                "Host Nginx Manager 测试邮件",
+                "这是一条测试邮件\n\n证书到期通知功能已启用。\n如果您收到此邮件，说明邮件配置正确。",
+                smtp_host,
+                smtp_port,
+                smtp_user,
+                smtp_pass
+            )
+            self.send_json({"ok": success, "error": None if success else "发送失败，请检查 SMTP 配置"})
+            return
+
+        # 验证 domain 参数（通用验证，放在最后）
         domain = str(data.get("domain", "")).strip().lower()
         if not validate_domain(domain):
             self.send_json({"error": "域名格式不合法"}, 400)
@@ -5992,56 +6042,6 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/migrate/clean-duplicates":
             result = clean_duplicate_configs()
             self.send_json(result, 200 if result["code"] == 0 else 500)
-            return
-
-        # 证书到期通知 API
-        if path == "/api/alert-config":
-            if not self.require_auth():
-                return
-            data = self.read_json()
-            save_alert_config(data)
-            log_action('config', 'update_alert', '更新通知配置')
-            self.send_json({"ok": True})
-            return
-
-        if path == "/api/test-webhook":
-            if not self.require_auth():
-                return
-            data = self.read_json()
-            url = data.get('url', '')
-            if not url:
-                self.send_json({"ok": False, "error": "缺少 URL"}, 400)
-                return
-
-            success = send_webhook(url, "🔐 这是一条测试消息\n\nHost Nginx Manager 证书监控测试")
-            self.send_json({"ok": success, "error": None if success else "发送失败，请检查 URL 是否正确"})
-            return
-
-        if path == "/api/test-email":
-            if not self.require_auth():
-                return
-            data = self.read_json()
-
-            email = data.get('email', '').strip()
-            smtp_host = data.get('smtp_host', '').strip()
-            smtp_port = data.get('smtp_port', 587)
-            smtp_user = data.get('smtp_user', '').strip()
-            smtp_pass = data.get('smtp_pass', '').strip()
-
-            if not all([email, smtp_host, smtp_user, smtp_pass]):
-                self.send_json({"ok": False, "error": "请填写完整的 SMTP 配置"}, 400)
-                return
-
-            success = send_email(
-                email,
-                "Host Nginx Manager 测试邮件",
-                "这是一条测试邮件\n\n证书到期通知功能已启用。\n如果您收到此邮件，说明邮件配置正确。",
-                smtp_host,
-                smtp_port,
-                smtp_user,
-                smtp_pass
-            )
-            self.send_json({"ok": success, "error": None if success else "发送失败，请检查 SMTP 配置"})
             return
 
         self.send_error(404)
