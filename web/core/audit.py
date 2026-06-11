@@ -3,6 +3,8 @@ import json
 import time
 from typing import Optional, Any
 
+# 注意：这里使用函数级导入避免循环依赖
+# core.audit -> core.database (OK，函数级导入安全)
 from .database import get_db
 
 

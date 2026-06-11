@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Build script: merge modular code into single deployable file."""
 import re
 import sys
 from pathlib import Path
 from typing import Set, List
+
+# Windows 编码修复
+if sys.platform == 'win32':
+    import codecs
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
 
 def extract_imports(content: str) -> tuple[Set[str], str]:
@@ -16,42 +23,50 @@ def extract_imports(content: str) -> tuple[Set[str], str]:
         (标准库导入集合, 代码主体)
     """
     lines = content.splitlines()
-    imports = set()
+    imports = []
     code_lines = []
-    skip_until_code = True
+    in_docstring = False
+    docstring_quote = None
+    skip_imports = False
 
     for i, line in enumerate(lines):
         stripped = line.strip()
 
-        # 跳过文件开头的 shebang、编码、文档字符串
+        # 跳过 shebang 和编码
         if i == 0 and stripped.startswith('#!'):
             continue
         if stripped.startswith('# -*- coding:') or stripped.startswith('# coding:'):
             continue
-        if i <= 3 and (stripped.startswith('"""') or stripped.startswith("'''")):
-            # 跳过模块文档字符串
-            if stripped.count('"""') >= 2 or stripped.count("'''") >= 2:
+
+        # 处理文档字符串
+        if i <= 10 and not skip_imports:
+            if not in_docstring:
+                if stripped.startswith('"""') or stripped.startswith("'''"):
+                    docstring_quote = '"""' if stripped.startswith('"""') else "'''"
+                    if stripped.count(docstring_quote) >= 2:
+                        continue  # 单行文档字符串
+                    in_docstring = True
+                    continue
+            else:
+                if docstring_quote in stripped:
+                    in_docstring = False
                 continue
+
+        # 提取导入（标准库，非内部模块，非相对导入）
+        if not skip_imports and re.match(r'^(from __future__|import |from [\w.]+\s+import)', stripped):
+            # 排除内部模块和相对导入
+            if not any(pattern in line for pattern in [' core.', ' auth.', ' utils.', ' certs.', ' proxy.', ' api.', ' ui.', 'from .', 'import .']):
+                imports.append(stripped)
             continue
 
-        # 提取导入语句（在文件顶部，且是标准库导入）
-        if skip_until_code and re.match(r'^(from __future__|import |from [\w.]+\s+import)', stripped):
-            # 排除内部模块
-            if not any(f' {mod}.' in line or f' {mod} ' in line or line.startswith(f'from {mod}') or line.startswith(f'import {mod}')
-                      for mod in ['core', 'auth', 'certs', 'proxy', 'api', 'ui', 'utils']):
-                imports.add(stripped)  # 只存储去除空格的导入语句
-            continue
-
-        # 遇到非导入代码，开始保留
+        # 遇到非导入代码，开始保留所有内容
         if stripped and not stripped.startswith('#'):
-            skip_until_code = False
+            skip_imports = True
 
-        # 保留所有非导入代码
-        if not skip_until_code or stripped.startswith('def ') or stripped.startswith('class '):
-            skip_until_code = False
+        if skip_imports:
             code_lines.append(line)
 
-    return imports, '\n'.join(code_lines)
+    return set(imports), '\n'.join(code_lines)
 
 
 def collect_modules(src_dir: Path) -> List[tuple[Path, str]]:
@@ -132,16 +147,38 @@ def merge_modules(src_dir: Path, output: Path, main_file: Path) -> None:
 
     with output.open('w', encoding='utf-8') as f:
         f.write('#!/usr/bin/env python3\n')
+        f.write('# -*- coding: utf-8 -*-\n')
         f.write('"""Lightweight web UI for host-nginx-manager (single-file build)."""\n')
         f.write('from __future__ import annotations\n\n')
 
-        # 写入所有标准库导入（排序去重）
-        sorted_imports = sorted(all_imports)
-        for imp in sorted_imports:
-            if imp and not imp.startswith('from __future__'):
-                f.write(imp + '\n')
+        # 合并重复的 from 导入
+        from_imports = {}
+        simple_imports = []
 
-        # 写入所有模块代码（去除分隔线）
+        for imp in sorted(all_imports):
+            if imp.startswith('from ') and ' import ' in imp:
+                parts = imp.split(' import ', 1)
+                module = parts[0]
+                items = parts[1].strip()
+                if module in from_imports:
+                    # 合并相同模块的导入
+                    existing = from_imports[module].split(', ')
+                    new_items = items.split(', ')
+                    from_imports[module] = ', '.join(sorted(set(existing + new_items)))
+                else:
+                    from_imports[module] = items
+            elif imp and not imp.startswith('from __future__'):
+                simple_imports.append(imp)
+
+        # 写入合并后的导入
+        for module in sorted(from_imports.keys()):
+            f.write(f"{module} import {from_imports[module]}\n")
+        for imp in sorted(simple_imports):
+            f.write(imp + '\n')
+
+        f.write('\n')
+
+        # 写入所有模块代码
         for block in code_blocks:
             f.write(block + '\n\n')
 
@@ -150,7 +187,7 @@ def merge_modules(src_dir: Path, output: Path, main_file: Path) -> None:
 
     output.chmod(0o755)
     print(f"\n✅ 构建完成: {output}")
-    print(f"   总行数: {len(output.read_text().splitlines())}")
+    print(f"   总行数: {len(output.read_text(encoding='utf-8').splitlines())}")
     print(f"   文件大小: {output.stat().st_size / 1024:.1f} KB")
 
 
