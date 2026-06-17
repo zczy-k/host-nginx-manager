@@ -230,35 +230,50 @@ ensure_default_server() {
     local cert="$DEFAULT_SSL_DIR/self-signed.crt"
     local key="$DEFAULT_SSL_DIR/self-signed.key"
 
-    # 如果配置文件已存在且已启用，校验通过则跳过
+    # ── 第 1 步：扫描所有 nginx 配置，检测哪些端口已有 default_server ──
+    # 必须在任何 nginx -t 之前执行，确保即使 nginx 整体校验失败也能检测冲突
+    local has_80=0 has_443=0
+    local scan_files=()
+    [[ -f /etc/nginx/nginx.conf ]] && scan_files+=("/etc/nginx/nginx.conf")
+    if [[ -d /etc/nginx/conf.d ]]; then
+        for f in /etc/nginx/conf.d/*.conf; do
+            [[ -f "$f" ]] && scan_files+=("$f")
+        done
+    fi
+    if [[ -d /etc/nginx/sites-enabled ]]; then
+        for f in /etc/nginx/sites-enabled/*; do
+            [[ -f "$f" ]] && scan_files+=("$f")
+        done
+    fi
+    for f in "${scan_files[@]}"; do
+        [[ "$(readlink -f "$f" 2>/dev/null)" == "$(readlink -f "$available" 2>/dev/null)" ]] && continue
+        if grep -q "listen.*80.*default_server\|listen.*\[::\]:80.*default_server" "$f" 2>/dev/null; then
+            has_80=1
+        fi
+        if grep -q "listen.*443.*default_server\|listen.*\[::\]:443.*default_server" "$f" 2>/dev/null; then
+            has_443=1
+        fi
+    done
+
+    if [[ "$has_80" == "1" && "$has_443" == "1" ]]; then
+        # 两个端口都已有 default_server，无需安装；清理旧文件（如果有）
+        if [[ -L "$enabled" ]]; then
+            rm -f "$enabled"
+            validate_and_reload || true
+        fi
+        return 0
+    fi
+
+    # 如果配置已存在、已启用、且不需要重新生成（无冲突且校验通过），跳过
     if [[ -f "$available" && -L "$enabled" ]]; then
         if nginx -t >/dev/null 2>&1; then
             return 0
         fi
-        warn "已有兜底配置但未通过校验，将重新生成..."
+        # 校验失败，移除符号链接，下面会重新生成
         rm -f "$enabled"
     fi
 
-    # 扫描现有 nginx 配置，检测哪些端口已有 default_server（排除自身）
-    local has_80=0 has_443=0
-    if [[ -d /etc/nginx/sites-enabled ]]; then
-        for f in /etc/nginx/sites-enabled/*; do
-            [[ -f "$f" ]] || continue
-            [[ "$(basename "$f")" == "${DEFAULT_CONF_NAME}.conf" ]] && continue
-            if grep -q "listen.*80.*default_server\|listen.*\[::\]:80.*default_server" "$f" 2>/dev/null; then
-                has_80=1
-            fi
-            if grep -q "listen.*443.*default_server\|listen.*\[::\]:443.*default_server" "$f" 2>/dev/null; then
-                has_443=1
-            fi
-        done
-    fi
-
-    if [[ "$has_80" == "1" && "$has_443" == "1" ]]; then
-        info "端口 80 和 443 均已有 default_server，跳过兜底配置"
-        return 0
-    fi
-
+    # ── 第 2 步：生成证书和配置 ──
     info "安装全局 default_server 兜底配置..."
     [[ "$has_80" == "1" ]] && info "  跳过 port 80（已有 default_server）"
     [[ "$has_443" == "1" ]] && info "  跳过 port 443（已有 default_server）"
@@ -275,7 +290,7 @@ ensure_default_server() {
         log "已生成自签名证书：$DEFAULT_SSL_DIR"
     fi
 
-    # 按端口生成兜底 server block，只写入没有冲突的端口
+    # 只写入没有冲突的端口
     mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
     {
         echo "# Managed by VPS Nginx 代理管理器"
@@ -307,10 +322,9 @@ ensure_default_server() {
         fi
     } > "$available"
 
-    # 启用配置
+    # ── 第 3 步：启用并校验 ──
     ln -sfn "$available" "$enabled"
 
-    # 校验并 reload
     if nginx -t >/dev/null 2>&1; then
         systemctl reload nginx >/dev/null 2>&1 || nginx -s reload
         log "全局 default_server 兜底配置已生效"
