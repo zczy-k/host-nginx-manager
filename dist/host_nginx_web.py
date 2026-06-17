@@ -33,7 +33,7 @@ import time
 import urllib.request
 
 
-# Module: utils\validators.py
+# Module: utils/validators.py
 
 
 DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$", re.IGNORECASE)
@@ -160,7 +160,7 @@ def sanitize_command_arg(arg: str) -> Optional[str]:
     return arg
 
 
-# Module: utils\qrcode.py
+# Module: utils/qrcode.py
 
 
 def generate_totp_qr_svg(secret: str, account: str = "admin", issuer: str = "Host Nginx Manager") -> str:
@@ -291,7 +291,7 @@ def generate_totp_qr_datauri(secret: str, account: str = "admin") -> str:
     return html
 
 
-# Module: core\database.py
+# Module: core/database.py
 
 
 DB_PATH = pathlib.Path(os.environ.get("HNG_DB_PATH", "/var/lib/host-nginx-manager/state.db"))
@@ -406,7 +406,7 @@ def set_config(key: str, value: str) -> None:
         )
 
 
-# Module: core\audit.py
+# Module: core/audit.py
 
 
 def log_action(
@@ -504,7 +504,7 @@ def cleanup_old_logs(days: int = 90) -> int:
         return cursor.rowcount
 
 
-# Module: auth\password.py
+# Module: auth/password.py
 
 
 def hash_password(password: str) -> str:
@@ -582,7 +582,7 @@ def validate_password_strength(password: str) -> tuple[bool, str]:
     return True, ""
 
 
-# Module: auth\totp.py
+# Module: auth/totp.py
 
 
 def generate_totp_secret() -> str:
@@ -641,7 +641,7 @@ def verify_totp_code(secret: str, code: str, time_window: int = 1) -> bool:
         return False
 
 
-# Module: auth\session.py
+# Module: auth/session.py
 
 
 SESSION_TTL = 30 * 60  # 30分钟
@@ -728,7 +728,7 @@ def delete_all_sessions() -> None:
         db.execute("DELETE FROM sessions")
 
 
-# Module: auth\ratelimit.py
+# Module: auth/ratelimit.py
 
 
 MAX_LOGIN_ATTEMPTS = 5
