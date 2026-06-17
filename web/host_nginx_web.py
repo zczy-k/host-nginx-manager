@@ -620,7 +620,7 @@ APP_HTML = r'''<!doctype html>
             <label>上传大小<input name="body" value="64m"></label>
             <label>读取超时<input name="readTimeout" value="300s"></label>
             <label>发送超时<input name="sendTimeout" value="300s"></label>
-            <label>监听端口<input name="listenPort" value="80" type="number" min="1" max="65535" title="站点监听端口，默认80"></label>
+            <label>监听端口<input name="listenPort" value="443" type="number" min="1" max="65535" title="HTTPS 默认 443，HTTP 默认 80"></label>
           </div>
           <label class="check"><input name="ssl" type="checkbox" checked> 立即申请证书并启用 HTTPS</label>
           <label class="check"><input name="backendInsecure" type="checkbox"> 后端是自签 HTTPS，关闭后端证书校验</label>
@@ -2564,7 +2564,8 @@ $('#siteSearchClear').onclick = () => { siteQuery = ''; siteFilter = 'all'; $('#
 $('#certSearch').addEventListener('input', e => { certQuery = e.target.value; render(); });
 $('#certFilter').addEventListener('change', e => { certFilter = e.target.value; render(); });
 $('#certSearchClear').onclick = () => { certQuery = ''; certFilter = 'all'; $('#certSearch').value = ''; $('#certFilter').value = 'all'; render(); };
-$('#createForm').addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(e.target); const body = {domain:f.get('domain'), upstream:f.get('upstream'), scheme:f.get('scheme'), email:f.get('email'), ssl:f.has('ssl'), body:f.get('body'), readTimeout:f.get('readTimeout'), sendTimeout:f.get('sendTimeout'), backendInsecure:f.has('backendInsecure'), listenPort:f.get('listenPort')}; try { await action('/api/sites/add', body); e.target.reset(); } catch(err){ showMsg(err.message,'bad'); $('#output').textContent = err.message; } });
+$('#createForm').addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(e.target); const body = {domain:f.get('domain'), upstream:f.get('upstream'), scheme:f.get('scheme'), email:f.get('email'), ssl:f.has('ssl'), body:f.get('body'), readTimeout:f.get('readTimeout'), sendTimeout:f.get('sendTimeout'), backendInsecure:f.has('backendInsecure'), listenPort:f.get('listenPort')}; try { await action('/api/sites/add', body); e.target.reset(); e.target.querySelector('[name="listenPort"]').value = '443'; } catch(err){ showMsg(err.message,'bad'); $('#output').textContent = err.message; } });
+$('#createForm [name="ssl"]').addEventListener('change', e => { const p = $('#createForm [name="listenPort"]'); if(e.target.checked && p.value === '80') p.value = '443'; else if(!e.target.checked && p.value === '443') p.value = '80'; });
 document.querySelectorAll('.nav button,[data-jump]').forEach(b => b.onclick = () => switchView(b.dataset.view||b.dataset.jump));
 document.getElementById('certModal').onclick = (e) => { if(e.target.id === 'certModal') closeCertModal(); };
 
@@ -3304,7 +3305,7 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
         "upstream_target": upstream_target,
         "ssl_cert_path": ssl_cert_path,
         "auto_renew": managed_state.get("AUTO_RENEW", "1") == "1",
-        "listen_port": managed_state.get("LISTEN_PORT", "80"),
+        "listen_port": "443" if managed_state.get("ENABLE_SSL") == "1" and managed_state.get("LISTEN_PORT", "80") == "80" else managed_state.get("LISTEN_PORT", "80"),
     }
 
 
@@ -3332,7 +3333,7 @@ def list_nginx_servers() -> list[dict[str, object]]:
             "upstream_scheme": site.get("UPSTREAM_SCHEME", "http"),
             "upstream_target": site.get("UPSTREAM", ""),
             "ssl_cert_path": f"/etc/letsencrypt/live/{site.get('DOMAIN', '')}/fullchain.pem" if site.get("ENABLE_SSL") == "1" else "",
-            "listen_port": site.get("LISTEN_PORT", "80"),
+            "listen_port": "443" if site.get("ENABLE_SSL") == "1" and site.get("LISTEN_PORT", "80") == "80" else site.get("LISTEN_PORT", "80"),
         }, local_ips) for site in managed_sites]
 
     servers: list[dict[str, object]] = []
@@ -3378,7 +3379,7 @@ def list_nginx_servers() -> list[dict[str, object]]:
                 "upstream_scheme": site.get("UPSTREAM_SCHEME", "http"),
                 "upstream_target": site.get("UPSTREAM", ""),
                 "ssl_cert_path": f"/etc/letsencrypt/live/{domain}/fullchain.pem" if site.get("ENABLE_SSL") == "1" else "",
-                "listen_port": site.get("LISTEN_PORT", "80"),
+                "listen_port": "443" if site.get("ENABLE_SSL") == "1" and site.get("LISTEN_PORT", "80") == "80" else site.get("LISTEN_PORT", "80"),
             }, local_ips))
 
     return [enrich_server_runtime(server, local_ips) for server in servers]

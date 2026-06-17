@@ -230,15 +230,41 @@ ensure_default_server() {
     local cert="$DEFAULT_SSL_DIR/self-signed.crt"
     local key="$DEFAULT_SSL_DIR/self-signed.key"
 
-    # 如果配置文件已存在且已启用，跳过
+    # 如果配置文件已存在且已启用，校验通过则跳过
     if [[ -f "$available" && -L "$enabled" ]]; then
+        if nginx -t >/dev/null 2>&1; then
+            return 0
+        fi
+        warn "已有兜底配置但未通过校验，将重新生成..."
+        rm -f "$enabled"
+    fi
+
+    # 扫描现有 nginx 配置，检测哪些端口已有 default_server（排除自身）
+    local has_80=0 has_443=0
+    if [[ -d /etc/nginx/sites-enabled ]]; then
+        for f in /etc/nginx/sites-enabled/*; do
+            [[ -f "$f" ]] || continue
+            [[ "$(basename "$f")" == "${DEFAULT_CONF_NAME}.conf" ]] && continue
+            if grep -q "listen.*80.*default_server\|listen.*\[::\]:80.*default_server" "$f" 2>/dev/null; then
+                has_80=1
+            fi
+            if grep -q "listen.*443.*default_server\|listen.*\[::\]:443.*default_server" "$f" 2>/dev/null; then
+                has_443=1
+            fi
+        done
+    fi
+
+    if [[ "$has_80" == "1" && "$has_443" == "1" ]]; then
+        info "端口 80 和 443 均已有 default_server，跳过兜底配置"
         return 0
     fi
 
     info "安装全局 default_server 兜底配置..."
+    [[ "$has_80" == "1" ]] && info "  跳过 port 80（已有 default_server）"
+    [[ "$has_443" == "1" ]] && info "  跳过 port 443（已有 default_server）"
 
-    # 1. 生成自签名证书（443 TLS 握手必须在 return 444 之前完成）
-    if [[ ! -f "$cert" || ! -f "$key" ]]; then
+    # 生成自签名证书（443 TLS 握手必须在 return 444 之前完成）
+    if [[ "$has_443" == "0" && ( ! -f "$cert" || ! -f "$key" ) ]]; then
         mkdir -p "$DEFAULT_SSL_DIR"
         openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
             -days 3650 \
@@ -249,43 +275,49 @@ ensure_default_server() {
         log "已生成自签名证书：$DEFAULT_SSL_DIR"
     fi
 
-    # 2. 写入兜底 server block 配置
+    # 按端口生成兜底 server block，只写入没有冲突的端口
     mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
-    cat > "$available" <<'CONF'
-# Managed by VPS Nginx 代理管理器
-# 全局兜底：拦截所有未匹配域名的请求，直接关闭连接
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name _;
-    return 444;
-}
+    {
+        echo "# Managed by VPS Nginx 代理管理器"
+        echo "# 全局兜底：拦截所有未匹配域名的请求，直接关闭连接"
 
-server {
-    listen 443 ssl default_server;
-    listen [::]:443 ssl default_server;
-    server_name _;
+        if [[ "$has_80" == "0" ]]; then
+            echo ""
+            echo "server {"
+            echo "    listen 80 default_server;"
+            echo "    listen [::]:80 default_server;"
+            echo "    server_name _;"
+            echo "    return 444;"
+            echo "}"
+        fi
 
-    ssl_certificate     CERT_PATH;
-    ssl_certificate_key KEY_PATH;
-    ssl_protocols TLSv1.2 TLSv1.3;
+        if [[ "$has_443" == "0" ]]; then
+            echo ""
+            echo "server {"
+            echo "    listen 443 ssl default_server;"
+            echo "    listen [::]:443 ssl default_server;"
+            echo "    server_name _;"
+            echo ""
+            echo "    ssl_certificate     $cert;"
+            echo "    ssl_certificate_key $key;"
+            echo "    ssl_protocols TLSv1.2 TLSv1.3;"
+            echo ""
+            echo "    return 444;"
+            echo "}"
+        fi
+    } > "$available"
 
-    return 444;
-}
-CONF
-    # 替换证书路径占位符
-    sed -i "s|CERT_PATH|$cert|" "$available"
-    sed -i "s|KEY_PATH|$key|" "$available"
-
-    # 3. 启用配置
+    # 启用配置
     ln -sfn "$available" "$enabled"
 
-    # 4. 校验并 reload
+    # 校验并 reload
     if nginx -t >/dev/null 2>&1; then
         systemctl reload nginx >/dev/null 2>&1 || nginx -s reload
         log "全局 default_server 兜底配置已生效"
     else
-        warn "default_server 配置校验失败，已保留配置文件但未 reload，请手动检查：$available"
+        warn "default_server 配置校验失败，已回滚"
+        rm -f "$enabled"
+        validate_and_reload || true
     fi
 }
 
