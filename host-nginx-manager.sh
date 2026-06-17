@@ -247,10 +247,10 @@ ensure_default_server() {
     fi
     for f in "${scan_files[@]}"; do
         [[ "$(readlink -f "$f" 2>/dev/null)" == "$(readlink -f "$available" 2>/dev/null)" ]] && continue
-        if grep -q "listen.*80.*default_server\|listen.*\[::\]:80.*default_server" "$f" 2>/dev/null; then
+        if grep "listen.*80.*default_server\|listen.*\[::\]:80.*default_server" "$f" 2>/dev/null | grep -qv '^\s*#'; then
             has_80=1
         fi
-        if grep -q "listen.*443.*default_server\|listen.*\[::\]:443.*default_server" "$f" 2>/dev/null; then
+        if grep "listen.*443.*default_server\|listen.*\[::\]:443.*default_server" "$f" 2>/dev/null | grep -qv '^\s*#'; then
             has_443=1
         fi
     done
