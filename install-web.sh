@@ -126,6 +126,9 @@ do_upgrade() {
     chmod 0755 "$MANAGER_BIN"
     log "管理脚本已更新"
 
+    # 2.5. 确保 default_server 兜底配置存在
+    "$MANAGER_BIN" install-default 2>/dev/null || true
+
     # 3. 升级Web界面（优先使用构建版本）
     info "3/5 升级Web界面..."
     mkdir -p "$WEB_DIR" "/var/lib/host-nginx-manager"
@@ -386,6 +389,9 @@ do_install() {
     info "下载管理脚本..."
     curl -fsSL "$RAW_BASE/host-nginx-manager.sh" -o "$MANAGER_BIN"
     chmod 0755 "$MANAGER_BIN"
+
+    # 安装全局 default_server 兜底配置
+    "$MANAGER_BIN" install-default 2>/dev/null || true
 
     info "下载Web界面（单文件版本）..."
     # 优先下载构建好的单文件版本，如果不存在则下载原始版本

@@ -620,6 +620,7 @@ APP_HTML = r'''<!doctype html>
             <label>上传大小<input name="body" value="64m"></label>
             <label>读取超时<input name="readTimeout" value="300s"></label>
             <label>发送超时<input name="sendTimeout" value="300s"></label>
+            <label>监听端口<input name="listenPort" value="80" type="number" min="1" max="65535" title="站点监听端口，默认80"></label>
           </div>
           <label class="check"><input name="ssl" type="checkbox" checked> 立即申请证书并启用 HTTPS</label>
           <label class="check"><input name="backendInsecure" type="checkbox"> 后端是自签 HTTPS，关闭后端证书校验</label>
@@ -1667,8 +1668,8 @@ function renderCertificateRows(){
     } else {
       // 如果已存在，优先保留 HTTPS 块（监听443）
       const existing = seenDomains.get(key);
-      const hasHttps = site.listen && site.listen.some(l => l.includes('443'));
-      const existingHasHttps = existing.listen && existing.listen.some(l => l.includes('443'));
+      const hasHttps = site.listen && site.listen.some(l => l.includes('ssl'));
+      const existingHasHttps = existing.listen && existing.listen.some(l => l.includes('ssl'));
       if (hasHttps && !existingHasHttps) {
         seenDomains.set(key, site);
       }
@@ -1768,8 +1769,8 @@ function render(){
     } else {
       // 优先保留 HTTPS 块
       const existing = seenSiteDomains.get(key);
-      const hasHttps = site.listen && site.listen.some(l => l.includes('443'));
-      const existingHasHttps = existing.listen && existing.listen.some(l => l.includes('443'));
+      const hasHttps = site.listen && site.listen.some(l => l.includes('ssl'));
+      const existingHasHttps = existing.listen && existing.listen.some(l => l.includes('ssl'));
       if (hasHttps && !existingHasHttps) {
         seenSiteDomains.set(key, site);
       }
@@ -1857,7 +1858,7 @@ function render(){
     let actions = '<span class="muted">只读</span>';
     const checkbox = s.managed ? `<input type="checkbox" class="site-checkbox" data-domain="${actionDomain}" onchange="updateBatchSelection()">` : '';
     if (s.managed) {
-      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}')">编辑</button><button class="btn small" onclick="renameSite('${actionDomain}')">重命名</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`;
+      actions = `<button class="btn small primary" onclick="editSite('${actionDomain}', '${actionTarget}', '${s.listen_port || 80}')">编辑</button><button class="btn small" onclick="renameSite('${actionDomain}')">重命名</button><button class="btn small danger" onclick="removeSite('${actionDomain}')">删除</button>`;
     } else if (s.can_manage) {
       actions = `<button class="btn small primary" onclick="takeOverSite('${actionDomain}', '${actionSource}')">纳入管理</button>`;
     } else if (s.readonly_reason) {
@@ -1905,7 +1906,43 @@ async function action(path, body){
   }
 }
 async function enableSsl(domain){ const email = prompt('证书邮箱，可留空'); await action('/api/sites/enable-ssl',{domain,email:email||''}); }
-async function editSite(domain, currentTarget){ const target = prompt('新的后端地址，例如 127.0.0.1:3002 或 http://127.0.0.1:3002', currentTarget || ''); if(target) await action('/api/sites/update',{domain,target}); }
+async function editSite(domain, currentTarget, currentPort){
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:480px;">
+      <div class="modal-header">
+        <h3>编辑站点：${escapeHtml(domain)}</h3>
+        <span class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div style="margin-bottom:16px;">
+          <label style="display:block;margin-bottom:4px;font-weight:500;">后端地址</label>
+          <input type="text" id="editTarget" value="${escapeHtml(currentTarget || '')}" placeholder="127.0.0.1:3001 或 http://127.0.0.1:3001">
+        </div>
+        <div style="margin-bottom:20px;">
+          <label style="display:block;margin-bottom:4px;font-weight:500;">监听端口</label>
+          <input type="number" id="editListenPort" value="${escapeHtml(String(currentPort || 80))}" min="1" max="65535">
+          <div class="muted" style="margin-top:4px;font-size:13px;">站点监听端口，默认 80</div>
+        </div>
+        <div class="row" style="gap:12px;">
+          <button class="btn" onclick="this.closest('.modal-overlay').remove()">取消</button>
+          <span class="spacer"></span>
+          <button class="btn primary" onclick="confirmEditSite('${escapeHtml(domain)}', this.closest('.modal-overlay'))">保存</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+}
+async function confirmEditSite(domain, modalEl){
+  const target = modalEl.querySelector('#editTarget').value.trim();
+  const listenPort = modalEl.querySelector('#editListenPort').value.trim();
+  if(!target){ alert('请输入后端地址'); return; }
+  modalEl.remove();
+  await action('/api/sites/update', {domain, target, listenPort});
+}
 async function disableSsl(domain){ if(confirm('确认关闭 HTTPS？')) await action('/api/sites/disable-ssl',{domain}); }
 async function removeSite(domain){
   showDeleteModal(domain);
@@ -2527,7 +2564,7 @@ $('#siteSearchClear').onclick = () => { siteQuery = ''; siteFilter = 'all'; $('#
 $('#certSearch').addEventListener('input', e => { certQuery = e.target.value; render(); });
 $('#certFilter').addEventListener('change', e => { certFilter = e.target.value; render(); });
 $('#certSearchClear').onclick = () => { certQuery = ''; certFilter = 'all'; $('#certSearch').value = ''; $('#certFilter').value = 'all'; render(); };
-$('#createForm').addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(e.target); const body = {domain:f.get('domain'), upstream:f.get('upstream'), scheme:f.get('scheme'), email:f.get('email'), ssl:f.has('ssl'), body:f.get('body'), readTimeout:f.get('readTimeout'), sendTimeout:f.get('sendTimeout'), backendInsecure:f.has('backendInsecure')}; try { await action('/api/sites/add', body); e.target.reset(); } catch(err){ showMsg(err.message,'bad'); $('#output').textContent = err.message; } });
+$('#createForm').addEventListener('submit', async e => { e.preventDefault(); const f = new FormData(e.target); const body = {domain:f.get('domain'), upstream:f.get('upstream'), scheme:f.get('scheme'), email:f.get('email'), ssl:f.has('ssl'), body:f.get('body'), readTimeout:f.get('readTimeout'), sendTimeout:f.get('sendTimeout'), backendInsecure:f.has('backendInsecure'), listenPort:f.get('listenPort')}; try { await action('/api/sites/add', body); e.target.reset(); } catch(err){ showMsg(err.message,'bad'); $('#output').textContent = err.message; } });
 document.querySelectorAll('.nav button,[data-jump]').forEach(b => b.onclick = () => switchView(b.dataset.view||b.dataset.jump));
 document.getElementById('certModal').onclick = (e) => { if(e.target.id === 'certModal') closeCertModal(); };
 
@@ -3216,7 +3253,7 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
     if managed and managed_state:
         https = managed_state.get("ENABLE_SSL") == "1"
     else:
-        https = has_ssl_cert or any("ssl" in item or ":443" in item or item.startswith("443") for item in listens)
+        https = has_ssl_cert or any("ssl" in item for item in listens)
 
     import_domain = next((name for name in names if DOMAIN_RE.match(name)), "")
     upstream_scheme, upstream_target = split_proxy_upstream(upstream)
@@ -3267,6 +3304,7 @@ def parse_server_block(block: list[str], source: str, managed_by_domain: dict[st
         "upstream_target": upstream_target,
         "ssl_cert_path": ssl_cert_path,
         "auto_renew": managed_state.get("AUTO_RENEW", "1") == "1",
+        "listen_port": managed_state.get("LISTEN_PORT", "80"),
     }
 
 
@@ -3294,6 +3332,7 @@ def list_nginx_servers() -> list[dict[str, object]]:
             "upstream_scheme": site.get("UPSTREAM_SCHEME", "http"),
             "upstream_target": site.get("UPSTREAM", ""),
             "ssl_cert_path": f"/etc/letsencrypt/live/{site.get('DOMAIN', '')}/fullchain.pem" if site.get("ENABLE_SSL") == "1" else "",
+            "listen_port": site.get("LISTEN_PORT", "80"),
         }, local_ips) for site in managed_sites]
 
     servers: list[dict[str, object]] = []
@@ -3339,6 +3378,7 @@ def list_nginx_servers() -> list[dict[str, object]]:
                 "upstream_scheme": site.get("UPSTREAM_SCHEME", "http"),
                 "upstream_target": site.get("UPSTREAM", ""),
                 "ssl_cert_path": f"/etc/letsencrypt/live/{domain}/fullchain.pem" if site.get("ENABLE_SSL") == "1" else "",
+                "listen_port": site.get("LISTEN_PORT", "80"),
             }, local_ips))
 
     return [enrich_server_runtime(server, local_ips) for server in servers]
@@ -3359,6 +3399,7 @@ def write_managed_state(domain: str, values: dict[str, str]) -> pathlib.Path:
         f"WEBSOCKET={values.get('WEBSOCKET', '1')}",
         f"BACKEND_INSECURE={values.get('BACKEND_INSECURE', '0')}",
         f"AUTO_RENEW={values.get('AUTO_RENEW', '1')}",
+        f"LISTEN_PORT={values.get('LISTEN_PORT', '80')}",
     ]
     lines.append("")
     state_path.write_text("\n".join(lines), encoding="utf-8")
@@ -3392,8 +3433,23 @@ def take_over_site(domain: str, source: str) -> dict[str, object]:
     # 检查是否有现有证书
     has_existing_cert = server.get("https") and pathlib.Path(f"/etc/letsencrypt/live/{domain}").exists()
 
+    # 从现有配置中提取监听端口
+    listen_port = "80"
+    for listen_val in (server.get("listen") or []):
+        parts = str(listen_val).split()
+        first = parts[0] if parts else ""
+        # 处理 [::]:PORT 格式
+        if "]:" in first:
+            first = first.rsplit(":", 1)[-1]
+        elif ":" in first and not first.startswith("["):
+            first = first.rsplit(":", 1)[-1]
+        # 跳过 SSL 监听（取 HTTP 端口）
+        if first.isdigit() and "ssl" not in str(listen_val):
+            listen_port = first
+            break
+
     # 使用管理脚本创建受管配置（先创建HTTP，避免重复申请证书）
-    args = [MANAGER_BIN, "add", domain, upstream_target, "--upstream-scheme", upstream_scheme, "--no-ssl"]
+    args = [MANAGER_BIN, "add", domain, upstream_target, "--upstream-scheme", upstream_scheme, "--no-ssl", "--listen-port", listen_port]
 
     result = run_cmd(args, timeout=120)
     if result["code"] != 0:
@@ -5092,7 +5148,14 @@ class Handler(BaseHTTPRequestHandler):
             if not scheme or not upstream:
                 self.send_json({"error": "后端地址必须是 HOST:PORT 或 http(s)://HOST:PORT"}, 400)
                 return
-            result = run_cmd([MANAGER_BIN, "update", domain, upstream, "--upstream-scheme", scheme], timeout=120)
+            args = [MANAGER_BIN, "update", domain, upstream, "--upstream-scheme", scheme]
+            listen_port = str(data.get("listenPort", "")).strip()
+            if listen_port:
+                if not listen_port.isdigit() or not (1 <= int(listen_port) <= 65535):
+                    self.send_json({"error": "监听端口必须是 1-65535 之间的数字"}, 400)
+                    return
+                args += ["--listen-port", listen_port]
+            result = run_cmd(args, timeout=120)
             self.send_json({"message": "站点已更新", **result}, 200 if result["code"] == 0 else 500)
             return
 
@@ -5119,6 +5182,12 @@ class Handler(BaseHTTPRequestHandler):
                 args += ["--proxy-read-timeout", str(data.get("readTimeout"))]
             if data.get("backendInsecure"):
                 args.append("--backend-insecure")
+            listen_port = str(data.get("listenPort", "80")).strip()
+            if listen_port:
+                if not listen_port.isdigit() or not (1 <= int(listen_port) <= 65535):
+                    self.send_json({"error": "监听端口必须是 1-65535 之间的数字"}, 400)
+                    return
+                args += ["--listen-port", listen_port]
             result = run_cmd(args, timeout=180)
             self.send_json({"message": "站点创建完成", **result}, 200 if result["code"] == 0 else 500)
             return

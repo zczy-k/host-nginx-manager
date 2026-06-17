@@ -34,6 +34,7 @@ BACKEND_INSECURE=0
 AUTO_RENEW=1
 DOMAIN=""
 UPSTREAM=""
+LISTEN_PORT=80
 
 log()   { printf "%b[OK]%b %s\n" "$GREEN" "$NC" "$*"; }
 info()  { printf "%b[i ]%b %s\n" "$BLUE" "$NC" "$*"; }
@@ -64,12 +65,15 @@ $APP_LABEL v$SCRIPT_VERSION
   host-nginx-manager.sh show DOMAIN
   host-nginx-manager.sh test
   host-nginx-manager.sh reload
+  host-nginx-manager.sh install-default
   host-nginx-manager.sh help
 
 说明:
   - 此脚本只管理它自己创建的标准 HTTP/HTTPS 反向代理站点。
   - 不会自动修改你当前 nginx.conf 里的 stream、Rathole、假证书拦截等手写配置。
   - 适合把普通 Web/API 服务统一挂到不同子域名下，由宿主 nginx 复用 80/443。
+  - install-default 会安装全局 default_server 兜底（80/443 均 return 444），
+    防止未配置域名意外指向已有站点。此命令在每次执行时自动检查，通常无需手动调用。
 
 参数:
   --upstream-scheme http|https   后端协议，默认 http
@@ -79,12 +83,15 @@ $APP_LABEL v$SCRIPT_VERSION
   --proxy-read-timeout TIME      默认 300s
   --proxy-send-timeout TIME      默认 300s
   --backend-insecure             当后端是自签 HTTPS 时关闭证书校验
+  --listen-port PORT             监听端口，默认 80（SSL 时 ACME 验证仍走 port 80）
   --yes                          跳过确认
   --delete-cert                  remove 时一并删除 certbot 证书
 
 示例:
   host-nginx-manager.sh add api.example.com 127.0.0.1:3001 --email you@example.com
+  host-nginx-manager.sh add api.example.com 127.0.0.1:3001 --listen-port 8080
   host-nginx-manager.sh update api.example.com 127.0.0.1:3002 --upstream-scheme http
+  host-nginx-manager.sh update api.example.com 127.0.0.1:3002 --listen-port 8443
   host-nginx-manager.sh add api.example.com 127.0.0.1:3001 --upstream-scheme http --no-ssl
   host-nginx-manager.sh enable-ssl api.example.com --email you@example.com
   host-nginx-manager.sh renew api.example.com
@@ -213,6 +220,75 @@ ensure_manager_dirs() {
     chmod 755 "$MANAGER_ROOT" "$ACME_ROOT"
 }
 
+# ---------- 全局 default_server 兜底 ----------
+DEFAULT_SSL_DIR="$MANAGER_ROOT/default-ssl"
+DEFAULT_CONF_NAME="vpspm-000-default"
+
+ensure_default_server() {
+    local available="/etc/nginx/sites-available/${DEFAULT_CONF_NAME}.conf"
+    local enabled="/etc/nginx/sites-enabled/${DEFAULT_CONF_NAME}.conf"
+    local cert="$DEFAULT_SSL_DIR/self-signed.crt"
+    local key="$DEFAULT_SSL_DIR/self-signed.key"
+
+    # 如果配置文件已存在且已启用，跳过
+    if [[ -f "$available" && -L "$enabled" ]]; then
+        return 0
+    fi
+
+    info "安装全局 default_server 兜底配置..."
+
+    # 1. 生成自签名证书（443 TLS 握手必须在 return 444 之前完成）
+    if [[ ! -f "$cert" || ! -f "$key" ]]; then
+        mkdir -p "$DEFAULT_SSL_DIR"
+        openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+            -days 3650 \
+            -subj "/CN=default-server.invalid" \
+            -keyout "$key" -out "$cert" 2>/dev/null
+        chmod 600 "$key"
+        chmod 644 "$cert"
+        log "已生成自签名证书：$DEFAULT_SSL_DIR"
+    fi
+
+    # 2. 写入兜底 server block 配置
+    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+    cat > "$available" <<'CONF'
+# Managed by VPS Nginx 代理管理器
+# 全局兜底：拦截所有未匹配域名的请求，直接关闭连接
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 444;
+}
+
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+
+    ssl_certificate     CERT_PATH;
+    ssl_certificate_key KEY_PATH;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    return 444;
+}
+CONF
+    # 替换证书路径占位符
+    sed -i "s|CERT_PATH|$cert|" "$available"
+    sed -i "s|KEY_PATH|$key|" "$available"
+
+    # 3. 启用配置
+    ln -sfn "$available" "$enabled"
+
+    # 4. 校验并 reload
+    if nginx -t >/dev/null 2>&1; then
+        systemctl reload nginx >/dev/null 2>&1 || nginx -s reload
+        log "全局 default_server 兜底配置已生效"
+    else
+        warn "default_server 配置校验失败，已保留配置文件但未 reload，请手动检查：$available"
+    fi
+}
+
 state_file() {
     printf '%s/%s.env\n' "$SITE_STATE_DIR" "$1"
 }
@@ -234,6 +310,7 @@ load_state() {
 
     # 为旧状态文件设置默认值（兼容性）
     AUTO_RENEW="${AUTO_RENEW:-1}"
+    LISTEN_PORT="${LISTEN_PORT:-80}"
 }
 
 save_state() {
@@ -251,6 +328,7 @@ PROXY_SEND_TIMEOUT=$PROXY_SEND_TIMEOUT
 WEBSOCKET=$WEBSOCKET
 BACKEND_INSECURE=$BACKEND_INSECURE
 AUTO_RENEW=$AUTO_RENEW
+LISTEN_PORT=$LISTEN_PORT
 EOF
     chmod 600 "$file"
 }
@@ -273,31 +351,53 @@ render_site_config() {
     fi
 
     conf+="# Managed by $APP_LABEL\n"
-    conf+="server {\n"
-    conf+="    listen 80;\n"
-    conf+="    listen [::]:80;\n"
-    conf+="    server_name $DOMAIN;\n\n"
-    conf+="    location ^~ /.well-known/acme-challenge/ {\n"
-    conf+="        root $ACME_ROOT;\n"
-    conf+="        default_type text/plain;\n"
-    conf+="        try_files \$uri =404;\n"
-    conf+="    }\n\n"
 
     if [[ "$ENABLE_SSL" == "1" ]]; then
+        # ── SSL 模式 ──
+        # SSL 监听端口：LISTEN_PORT=80 时回退到 443（兼容旧行为），否则使用 LISTEN_PORT
+        local ssl_port="443"
+        if [[ "$LISTEN_PORT" != "80" ]]; then
+            ssl_port="$LISTEN_PORT"
+        fi
+
+        # 跳转 URL：443 或 80→443 时省略端口号，其他端口包含端口号
+        local redirect_url="https://\$host\$request_uri"
+        if [[ "$LISTEN_PORT" != "80" && "$LISTEN_PORT" != "443" ]]; then
+            redirect_url="https://\$host:${LISTEN_PORT}\$request_uri"
+        fi
+
+        # HTTP server block（port 80）：ACME 验证 + HTTPS 跳转
+        conf+="server {\n"
+        conf+="    listen 80;\n"
+        conf+="    listen [::]:80;\n"
+        conf+="    server_name $DOMAIN;\n\n"
+        conf+="    location ^~ /.well-known/acme-challenge/ {\n"
+        conf+="        root $ACME_ROOT;\n"
+        conf+="        default_type text/plain;\n"
+        conf+="        try_files \$uri =404;\n"
+        conf+="    }\n\n"
         conf+="    location / {\n"
-        conf+="        return 301 https://\$host\$request_uri;\n"
+        conf+="        return 301 ${redirect_url};\n"
         conf+="    }\n"
         conf+="}\n\n"
+
+        # HTTPS server block
         conf+="server {\n"
-        conf+="    listen 443 ssl http2;\n"
-        conf+="    listen [::]:443 ssl http2;\n"
+        conf+="    listen ${ssl_port} ssl http2;\n"
+        conf+="    listen [::]:${ssl_port} ssl http2;\n"
         conf+="    server_name $DOMAIN;\n\n"
         conf+="    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;\n"
         conf+="    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;\n"
         conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
         conf+="    ssl_prefer_server_ciphers on;\n\n"
         conf+="    location / {\n"
+
     else
+        # ── 纯 HTTP 模式 ──
+        conf+="server {\n"
+        conf+="    listen ${LISTEN_PORT};\n"
+        conf+="    listen [::]:${LISTEN_PORT};\n"
+        conf+="    server_name $DOMAIN;\n\n"
         conf+="    location / {\n"
     fi
 
@@ -569,6 +669,10 @@ parse_add_options() {
                 YES_MODE=1
                 shift
                 ;;
+            --listen-port)
+                LISTEN_PORT="${2:-}"
+                shift 2
+                ;;
             *)
                 die "未知参数：$1"
                 ;;
@@ -576,6 +680,13 @@ parse_add_options() {
     done
 
     [[ "$UPSTREAM_SCHEME" == "http" || "$UPSTREAM_SCHEME" == "https" ]] || die "--upstream-scheme 只能是 http 或 https"
+
+    if [[ -n "$LISTEN_PORT" ]]; then
+        [[ "$LISTEN_PORT" =~ ^[0-9]+$ ]] || die "--listen-port 必须是数字"
+        (( LISTEN_PORT >= 1 && LISTEN_PORT <= 65535 )) || die "--listen-port 必须在 1-65535 之间"
+    else
+        LISTEN_PORT=80
+    fi
 }
 
 warn_if_domain_exists_elsewhere() {
@@ -654,11 +765,22 @@ write_summary() {
     section "站点已就绪"
     printf '域名         : %s\n' "$DOMAIN"
     printf '后端         : %s://%s\n' "$UPSTREAM_SCHEME" "$UPSTREAM"
+    printf '监听端口     : %s\n' "$LISTEN_PORT"
     printf 'HTTPS        : %s\n' "$([[ "$ENABLE_SSL" == "1" ]] && echo 已启用 || echo 未启用)"
     if [[ "$ENABLE_SSL" == "1" ]]; then
-        printf '访问地址     : https://%s\n' "$DOMAIN"
+        local display_port="443"
+        [[ "$LISTEN_PORT" != "80" ]] && display_port="$LISTEN_PORT"
+        if [[ "$display_port" == "443" ]]; then
+            printf '访问地址     : https://%s\n' "$DOMAIN"
+        else
+            printf '访问地址     : https://%s:%s\n' "$DOMAIN" "$display_port"
+        fi
     else
-        printf '访问地址     : http://%s\n' "$DOMAIN"
+        if [[ "$LISTEN_PORT" == "80" ]]; then
+            printf '访问地址     : http://%s\n' "$DOMAIN"
+        else
+            printf '访问地址     : http://%s:%s\n' "$DOMAIN" "$LISTEN_PORT"
+        fi
     fi
     printf '状态文件     : %s\n' "$(state_file "$DOMAIN")"
     printf '配置文件     : %s\n' "$(site_conf_available "$DOMAIN")"
@@ -808,6 +930,7 @@ cmd_rename() {
     local old_websocket="$WEBSOCKET"
     local old_backend_insecure="$BACKEND_INSECURE"
     local old_auto_renew="$AUTO_RENEW"
+    local old_listen_port="$LISTEN_PORT"
 
     info "  后端：$old_upstream_scheme://$old_upstream"
     info "  HTTPS：$old_enable_ssl"
@@ -825,6 +948,7 @@ cmd_rename() {
     WEBSOCKET="$old_websocket"
     BACKEND_INSECURE="$old_backend_insecure"
     AUTO_RENEW="$old_auto_renew"
+    LISTEN_PORT="$old_listen_port"
 
     save_state
     apply_site || die "创建新站点配置失败"
@@ -956,7 +1080,8 @@ cmd_list() {
     find "$SITE_STATE_DIR" -maxdepth 1 -name '*.env' | sort | while read -r file; do
         # shellcheck disable=SC1090
         . "$file"
-        printf '%-30s %-8s %-24s %s\n' "$DOMAIN" "$([[ "$ENABLE_SSL" == "1" ]] && echo HTTPS || echo HTTP)" "$UPSTREAM_SCHEME://$UPSTREAM" "$(basename "$file")"
+        LISTEN_PORT="${LISTEN_PORT:-80}"
+        printf '%-30s %-8s %-6s %-24s %s\n' "$DOMAIN" "$([[ "$ENABLE_SSL" == "1" ]] && echo HTTPS || echo HTTP)" "$LISTEN_PORT" "$UPSTREAM_SCHEME://$UPSTREAM" "$(basename "$file")"
     done
 }
 
@@ -968,6 +1093,7 @@ cmd_show() {
     printf '域名              : %s\n' "$DOMAIN"
     printf '后端              : %s://%s\n' "$UPSTREAM_SCHEME" "$UPSTREAM"
     printf 'HTTPS             : %s\n' "$([[ "$ENABLE_SSL" == "1" ]] && echo 已启用 || echo 未启用)"
+    printf '监听端口          : %s\n' "${LISTEN_PORT:-80}"
     printf '邮箱              : %s\n' "${CERTBOT_EMAIL:-未设置}"
     printf '上传大小          : %s\n' "$CLIENT_MAX_BODY_SIZE"
     printf '读取超时          : %s\n' "$PROXY_READ_TIMEOUT"
@@ -1364,6 +1490,23 @@ cmd_health_check() {
     echo "错误：$errors"
 }
 
+cmd_install_default() {
+    local available="/etc/nginx/sites-available/${DEFAULT_CONF_NAME}.conf"
+    local enabled="/etc/nginx/sites-enabled/${DEFAULT_CONF_NAME}.conf"
+
+    section "全局 default_server 兜底配置"
+
+    if [[ -f "$available" && -L "$enabled" ]]; then
+        log "兜底配置已安装且已启用"
+        info "配置文件：$available"
+        info "自签名证书：$DEFAULT_SSL_DIR"
+        return 0
+    fi
+
+    # 调用安装函数（如已安装则自动跳过）
+    ensure_default_server
+}
+
 main() {
     case "$COMMAND" in
         help|-h|--help)
@@ -1376,6 +1519,7 @@ main() {
     require_linux
     require_nginx
     ensure_manager_dirs
+    ensure_default_server
 
     case "$COMMAND" in
         add)
@@ -1439,6 +1583,9 @@ main() {
             ;;
         list-backups)
             cmd_list_backups
+            ;;
+        install-default)
+            cmd_install_default
             ;;
 
         *)
